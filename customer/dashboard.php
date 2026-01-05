@@ -59,6 +59,10 @@ $recent_payments = $stmt->fetchAll();
 
 // Check if this is first login (for special first-time message)
 $is_first_login = ($user['login_count'] == 1);
+
+// Get first letter of first name for the circle
+$first_name = $_SESSION['full_name'];
+$first_letter = strtoupper(substr($first_name, 0, 1));
 ?>
 
 <!DOCTYPE html>
@@ -250,10 +254,10 @@ $is_first_login = ($user['login_count'] == 1);
             margin-top: 0.2rem;
         }
         
-        /* Existing styles remain unchanged */
-        .user-avatar {
-            width: 35px;
-            height: 35px;
+        /* Updated: First letter circle before name */
+        .first-letter-circle {
+            width: 28px;
+            height: 28px;
             background: #075B5E;
             color: white;
             border-radius: 50%;
@@ -261,7 +265,10 @@ $is_first_login = ($user['login_count'] == 1);
             align-items: center;
             justify-content: center;
             font-weight: bold;
-            margin-right: 0.5rem;
+            font-size: 0.9rem;
+            margin-right: 8px;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             flex-shrink: 0;
         }
         
@@ -277,12 +284,23 @@ $is_first_login = ($user['login_count'] == 1);
             gap: 0.5rem;
             padding: 0.5rem 0.8rem;
             border-radius: 4px;
-            transition: background 0.3s;
+            transition: all 0.3s;
             flex-shrink: 0;
         }
         
         .profile-menu-trigger:hover {
             background: rgba(7, 91, 94, 0.1);
+        }
+        
+        .profile-menu-trigger:hover .first-letter-circle {
+            transform: scale(1.1);
+            transition: transform 0.3s;
+        }
+        
+        .user-name-display {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
         .notification-badge {
@@ -313,6 +331,12 @@ $is_first_login = ($user['login_count'] == 1);
             .sidebar-overlay {
                 top: 60px;
                 height: calc(100vh - 60px);
+            }
+            
+            .first-letter-circle {
+                width: 26px;
+                height: 26px;
+                font-size: 0.85rem;
             }
         }
         
@@ -439,18 +463,14 @@ $is_first_login = ($user['login_count'] == 1);
                     <li><a href="payment_history.php">Payment History</a></li>
                     <li style="display: flex; align-items: center;">
                         <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
-                            <div class="user-avatar">
-                                <?php 
-                                $names = explode(' ', $_SESSION['full_name']);
-                                $initials = '';
-                                foreach ($names as $n) {
-                                    $initials .= strtoupper(substr($n, 0, 1));
-                                }
-                                echo substr($initials, 0, 2);
-                                ?>
+                            <!-- First letter in white-bordered circle -->
+                            <div class="first-letter-circle">
+                                <?php echo $first_letter; ?>
                             </div>
-                            <span><?php echo $_SESSION['full_name']; ?></span>
-                            <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
+                            <div class="user-name-display">
+                                <span><?php echo $_SESSION['full_name']; ?></span>
+                                <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
+                            </div>
                         </div>
                         <a href="logout.php" style="margin-left: 15px;">Logout</a>
                     </li>
@@ -669,6 +689,18 @@ $is_first_login = ($user['login_count'] == 1);
         
         // Make header higher z-index to stay on top
         document.querySelector('.header').style.zIndex = '1001';
+        
+        // Add hover animation to first letter circle
+        const firstLetterCircle = document.querySelector('.first-letter-circle');
+        if (firstLetterCircle) {
+            firstLetterCircle.addEventListener('mouseenter', function() {
+                this.style.transform = 'scale(1.1)';
+            });
+            
+            firstLetterCircle.addEventListener('mouseleave', function() {
+                this.style.transform = 'scale(1)';
+            });
+        }
     </script>
 </body>
 </html>
