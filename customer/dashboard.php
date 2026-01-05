@@ -68,8 +68,367 @@ $is_first_login = ($user['login_count'] == 1);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Customer Dashboard - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
+    <!-- Lucide Icons for Profile Sidebar -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+        /* Profile Sidebar Styles - Fixed position below header */
+        .profile-sidebar {
+            position: fixed;
+            top: 70px; /* Position below header */
+            right: -400px;
+            width: 350px;
+            height: calc(100vh - 70px); /* Full height minus header */
+            background: white;
+            box-shadow: -5px 0 25px rgba(0,0,0,0.1);
+            transition: right 0.3s ease;
+            z-index: 1000;
+            overflow-y: auto;
+            border-top: 1px solid #e9ecef;
+        }
+        
+        .profile-sidebar.active {
+            right: 0;
+        }
+        
+        .sidebar-overlay {
+            position: fixed;
+            top: 70px; /* Start below header */
+            left: 0;
+            width: 100%;
+            height: calc(100vh - 70px); /* Full height minus header */
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+            display: none;
+        }
+        
+        .sidebar-overlay.active {
+            display: block;
+        }
+        
+        .sidebar-header {
+            background: linear-gradient(135deg, #075B5E 0%, #0a7a7e 100%);
+            color: white;
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        
+        .sidebar-avatar {
+            width: 50px;
+            height: 50px;
+            background: white;
+            color: #075B5E;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-user-info h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            line-height: 1.3;
+        }
+        
+        .sidebar-user-info p {
+            margin: 0.2rem 0 0 0;
+            opacity: 0.8;
+            font-size: 0.85rem;
+        }
+        
+        .sidebar-close {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-menu {
+            padding: 1rem 0;
+        }
+        
+        .sidebar-item {
+            display: flex;
+            align-items: center;
+            padding: 0.9rem 1.5rem;
+            color: #333;
+            text-decoration: none;
+            transition: all 0.3s;
+            border-left: 4px solid transparent;
+            font-size: 0.95rem;
+        }
+        
+        .sidebar-item:hover {
+            background: #f8f9fa;
+            border-left-color: #075B5E;
+            padding-left: 1.8rem;
+        }
+        
+        .sidebar-item.active {
+            background: #f0f7f7;
+            border-left-color: #075B5E;
+            color: #075B5E;
+            font-weight: 500;
+        }
+        
+        .sidebar-icon {
+            width: 1.1rem;
+            height: 1.1rem;
+            margin-right: 0.8rem;
+            color: #666;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-item:hover .sidebar-icon {
+            color: #075B5E;
+        }
+        
+        .sidebar-item.active .sidebar-icon {
+            color: #075B5E;
+        }
+        
+        .sidebar-divider {
+            height: 1px;
+            background: #e9ecef;
+            margin: 0.8rem 1.5rem;
+        }
+        
+        .sidebar-footer {
+            padding: 1.2rem 1.5rem;
+            background: #f8f9fa;
+            margin-top: auto;
+            border-top: 1px solid #e9ecef;
+            position: sticky;
+            bottom: 0;
+        }
+        
+        .sidebar-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+            padding: 0 1.5rem;
+            margin-bottom: 1.2rem;
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 0.8rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .stat-value {
+            font-size: 1.3rem;
+            font-weight: bold;
+            color: #075B5E;
+            display: block;
+            line-height: 1.2;
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: #666;
+            display: block;
+            margin-top: 0.2rem;
+        }
+        
+        /* Existing styles remain unchanged */
+        .user-avatar {
+            width: 35px;
+            height: 35px;
+            background: #075B5E;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 0.5rem;
+            flex-shrink: 0;
+        }
+        
+        .nav-links li {
+            display: flex;
+            align-items: center;
+        }
+        
+        .profile-menu-trigger {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.8rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+            flex-shrink: 0;
+        }
+        
+        .profile-menu-trigger:hover {
+            background: rgba(7, 91, 94, 0.1);
+        }
+        
+        .notification-badge {
+            background: #e74c3c;
+            color: white;
+            font-size: 0.7rem;
+            padding: 0.1rem 0.4rem;
+            border-radius: 10px;
+            margin-left: auto;
+            min-width: 18px;
+            text-align: center;
+        }
+        
+        /* Header z-index fix */
+        .header {
+            position: relative;
+            z-index: 1001; /* Higher than sidebar */
+        }
+        
+        @media (max-width: 768px) {
+            .profile-sidebar {
+                width: 100%;
+                right: -100%;
+                top: 60px;
+                height: calc(100vh - 60px);
+            }
+            
+            .sidebar-overlay {
+                top: 60px;
+                height: calc(100vh - 60px);
+            }
+        }
+        
+        /* Scrollbar styling */
+        .profile-sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .profile-sidebar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        .profile-sidebar::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+        
+        .profile-sidebar::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+    </style>
 </head>
 <body>
+    <!-- Profile Sidebar -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    <div class="profile-sidebar" id="profileSidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-avatar">
+                <?php 
+                $names = explode(' ', $_SESSION['full_name']);
+                $initials = '';
+                foreach ($names as $n) {
+                    $initials .= strtoupper(substr($n, 0, 1));
+                }
+                echo substr($initials, 0, 2);
+                ?>
+            </div>
+            <div class="sidebar-user-info">
+                <h3><?php echo htmlspecialchars($_SESSION['full_name']); ?></h3>
+                <p>ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
+            </div>
+            <button class="sidebar-close" onclick="closeProfileSidebar()">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+        
+        <!-- Quick Stats -->
+        <div class="sidebar-stats">
+            <div class="stat-item">
+                <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
+                <span class="stat-label">Pending Bills</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value">₹<?php echo number_format($pending_stats['total_amount'] ?? 0, 0); ?></span>
+                <span class="stat-label">Total Due</span>
+            </div>
+        </div>
+        
+        <div class="sidebar-menu">
+            <a href="profile.php" class="sidebar-item active">
+                <i data-lucide="user" class="sidebar-icon"></i>
+                My Profile
+            </a>
+            <a href="edit_profile.php" class="sidebar-item">
+                <i data-lucide="edit" class="sidebar-icon"></i>
+                Edit Profile
+            </a>
+            <a href="change_password.php" class="sidebar-item">
+                <i data-lucide="key" class="sidebar-icon"></i>
+                Change Password
+            </a>
+            
+            <div class="sidebar-divider"></div>
+            
+            <a href="bills.php" class="sidebar-item">
+                <i data-lucide="file-text" class="sidebar-icon"></i>
+                My Bills
+            </a>
+            <a href="payment.php" class="sidebar-item">
+                <i data-lucide="credit-card" class="sidebar-icon"></i>
+                Make Payment
+            </a>
+            <a href="payment_history.php" class="sidebar-item">
+                <i data-lucide="history" class="sidebar-icon"></i>
+                Payment History
+            </a>
+            
+            <div class="sidebar-divider"></div>
+            
+            <a href="notifications.php" class="sidebar-item">
+                <i data-lucide="bell" class="sidebar-icon"></i>
+                Notifications
+                <span class="notification-badge">3</span>
+            </a>
+            <a href="settings.php" class="sidebar-item">
+                <i data-lucide="settings" class="sidebar-icon"></i>
+                Settings
+            </a>
+            <a href="help.php" class="sidebar-item">
+                <i data-lucide="help-circle" class="sidebar-icon"></i>
+                Help & Support
+            </a>
+        </div>
+        
+        <div class="sidebar-footer">
+            <div style="display: flex; align-items: center; gap: 0.8rem; margin-bottom: 1rem;">
+                <i data-lucide="shield" style="width: 1rem; height: 1rem; color: #27ae60;"></i>
+                <span style="font-size: 0.85rem; color: #666;">Account secured</span>
+            </div>
+            <a href="logout.php" class="btn" style="background: #e74c3c; color: white; width: 100%; text-align: center; padding: 0.7rem;">
+                <i data-lucide="log-out" style="width: 0.9rem; height: 0.9rem; margin-right: 0.4rem;"></i>
+                Logout
+            </a>
+        </div>
+    </div>
+
     <header class="header">
         <div class="container">
             <nav class="navbar">
@@ -79,17 +438,20 @@ $is_first_login = ($user['login_count'] == 1);
                     <li><a href="bills.php">My Bills</a></li>
                     <li><a href="payment_history.php">Payment History</a></li>
                     <li style="display: flex; align-items: center;">
-                        <div class="user-avatar">
-                            <?php 
-                            $names = explode(' ', $_SESSION['full_name']);
-                            $initials = '';
-                            foreach ($names as $n) {
-                                $initials .= strtoupper(substr($n, 0, 1));
-                            }
-                            echo substr($initials, 0, 2);
-                            ?>
+                        <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
+                            <div class="user-avatar">
+                                <?php 
+                                $names = explode(' ', $_SESSION['full_name']);
+                                $initials = '';
+                                foreach ($names as $n) {
+                                    $initials .= strtoupper(substr($n, 0, 1));
+                                }
+                                echo substr($initials, 0, 2);
+                                ?>
+                            </div>
+                            <span><?php echo $_SESSION['full_name']; ?></span>
+                            <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
                         </div>
-                        <span><?php echo $_SESSION['full_name']; ?></span>
                         <a href="logout.php" style="margin-left: 15px;">Logout</a>
                     </li>
                 </ul>
@@ -222,7 +584,6 @@ $is_first_login = ($user['login_count'] == 1);
                 <?php else: ?>
                     <p>No payments yet.</p>
                 <?php endif; ?>
-            </div>
         </div>
     </div>
 
@@ -231,5 +592,83 @@ $is_first_login = ($user['login_count'] == 1);
             <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
         </div>
     </footer>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+        
+        // Profile Sidebar Functions
+        function toggleProfileSidebar() {
+            const sidebar = document.getElementById('profileSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('active');
+            
+            // Prevent body scroll when sidebar is open
+            if (sidebar.classList.contains('active')) {
+                document.body.style.overflow = 'hidden';
+            } else {
+                document.body.style.overflow = 'auto';
+            }
+        }
+        
+        function closeProfileSidebar() {
+            const sidebar = document.getElementById('profileSidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        }
+        
+        // Close sidebar when clicking overlay
+        document.getElementById('sidebarOverlay').addEventListener('click', closeProfileSidebar);
+        
+        // Close sidebar with Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeProfileSidebar();
+            }
+        });
+        
+        // Add click handlers to sidebar items
+        document.querySelectorAll('.sidebar-item').forEach(item => {
+            item.addEventListener('click', function(e) {
+                if (!this.href || this.href === '#') {
+                    e.preventDefault();
+                }
+                
+                // Remove active class from all items
+                document.querySelectorAll('.sidebar-item').forEach(i => {
+                    i.classList.remove('active');
+                });
+                
+                // Add active class to clicked item
+                this.classList.add('active');
+                
+                // Close sidebar after clicking (for mobile)
+                if (window.innerWidth < 768) {
+                    setTimeout(closeProfileSidebar, 300);
+                }
+            });
+        });
+        
+        // Close sidebar when clicking outside on mobile
+        document.addEventListener('click', function(event) {
+            const sidebar = document.getElementById('profileSidebar');
+            const trigger = document.querySelector('.profile-menu-trigger');
+            
+            if (sidebar.classList.contains('active') && 
+                window.innerWidth < 768 && 
+                !sidebar.contains(event.target) && 
+                !trigger.contains(event.target)) {
+                closeProfileSidebar();
+            }
+        });
+        
+        // Make header higher z-index to stay on top
+        document.querySelector('.header').style.zIndex = '1001';
+    </script>
 </body>
 </html>
