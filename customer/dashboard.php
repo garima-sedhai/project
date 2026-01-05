@@ -60,9 +60,14 @@ $recent_payments = $stmt->fetchAll();
 // Check if this is first login (for special first-time message)
 $is_first_login = ($user['login_count'] == 1);
 
-// Get first letter of first name for the circle
+// Get first letters of both first and last names
 $first_name = $_SESSION['full_name'];
-$first_letter = strtoupper(substr($first_name, 0, 1));
+$names = explode(' ', $first_name);
+$initials = '';
+foreach ($names as $n) {
+    $initials .= strtoupper(substr($n, 0, 1));
+}
+$first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
 ?>
 
 <!DOCTYPE html>
@@ -366,12 +371,8 @@ $first_letter = strtoupper(substr($first_name, 0, 1));
         <div class="sidebar-header">
             <div class="sidebar-avatar">
                 <?php 
-                $names = explode(' ', $_SESSION['full_name']);
-                $initials = '';
-                foreach ($names as $n) {
-                    $initials .= strtoupper(substr($n, 0, 1));
-                }
-                echo substr($initials, 0, 2);
+                // Use the already calculated $first_letter variable
+                echo $first_letter; // This now shows both initials
                 ?>
             </div>
             <div class="sidebar-user-info">
@@ -465,7 +466,7 @@ $first_letter = strtoupper(substr($first_name, 0, 1));
                         <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
                             <!-- First letter in white-bordered circle -->
                             <div class="first-letter-circle">
-                                <?php echo $first_letter; ?>
+                                <?php echo $first_letter; // Now shows both initials ?>
                             </div>
                             <div class="user-name-display">
                                 <span><?php echo $_SESSION['full_name']; ?></span>
@@ -604,6 +605,7 @@ $first_letter = strtoupper(substr($first_name, 0, 1));
                 <?php else: ?>
                     <p>No payments yet.</p>
                 <?php endif; ?>
+            </div>
         </div>
     </div>
 
