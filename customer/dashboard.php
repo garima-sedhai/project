@@ -371,8 +371,12 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <div class="sidebar-header">
             <div class="sidebar-avatar">
                 <?php 
-                // Use the already calculated $first_letter variable
-                echo $first_letter; // This now shows both initials
+                $names = explode(' ', $_SESSION['full_name']);
+                $initials = '';
+                foreach ($names as $n) {
+                    $initials .= strtoupper(substr($n, 0, 1));
+                }
+                echo substr($initials, 0, 2);
                 ?>
             </div>
             <div class="sidebar-user-info">
@@ -397,7 +401,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         </div>
         
         <div class="sidebar-menu">
-            <a href="profile.php" class="sidebar-item active">
+            <a href="profile.php" class="sidebar-item">
                 <i data-lucide="user" class="sidebar-icon"></i>
                 My Profile
             </a>
@@ -408,6 +412,12 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             <a href="change_password.php" class="sidebar-item">
                 <i data-lucide="key" class="sidebar-icon"></i>
                 Change Password
+            </a>
+            
+            <!-- DELETE ACCOUNT OPTION ADDED HERE -->
+            <a href="delete_account.php" class="sidebar-item" style="color: #e74c3c;">
+                <i data-lucide="trash-2" class="sidebar-icon"></i>
+                Delete Account
             </a>
             
             <div class="sidebar-divider"></div>
@@ -466,7 +476,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                         <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
                             <!-- First letter in white-bordered circle -->
                             <div class="first-letter-circle">
-                                <?php echo $first_letter; // Now shows both initials ?>
+                                <?php echo $first_letter; ?>
                             </div>
                             <div class="user-name-display">
                                 <span><?php echo $_SESSION['full_name']; ?></span>
@@ -605,7 +615,6 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 <?php else: ?>
                     <p>No payments yet.</p>
                 <?php endif; ?>
-            </div>
         </div>
     </div>
 
