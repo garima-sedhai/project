@@ -15,40 +15,137 @@ $message_type = '';
 // Get service ID from URL if provided
 $preselected_service_id = isset($_GET['service_id']) ? $_GET['service_id'] : null;
 
+// FIRST: Check and create necessary database tables
+try {
+    // Check if bill_items table exists
+    $stmt = $pdo->query("SHOW TABLES LIKE 'bill_items'");
+    if ($stmt->rowCount() == 0) {
+        // Create bill_items table
+        $pdo->exec("CREATE TABLE bill_items (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            bill_id INT NOT NULL,
+            service_id INT NOT NULL,
+            price DECIMAL(10,2) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX (bill_id),
+            INDEX (service_id)
+        )");
+        error_log("Created bill_items table");
+    }
+    
+    // Check if bills table has service_details column
+    $stmt = $pdo->query("SHOW COLUMNS FROM bills LIKE 'service_details'");
+    if ($stmt->rowCount() == 0) {
+        // Add service_details column
+        $pdo->exec("ALTER TABLE bills ADD COLUMN service_details TEXT NULL AFTER total_amount");
+        error_log("Added service_details column to bills table");
+    }
+} catch (Exception $e) {
+    error_log("Database setup error: " . $e->getMessage());
+}
+
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     if (isset($_POST['create_bill'])) {
         $user_id = $_POST['user_id'];
-        $service_id = $_POST['service_id'];
-        $amount = $_POST['amount'];
+        $selected_service_ids = isset($_POST['services']) ? $_POST['services'] : array();
+        $service_amounts = isset($_POST['service_amounts']) ? $_POST['service_amounts'] : array();
         $description = trim($_POST['description']);
         $tax_rate = $_POST['tax_rate'] ?? 0;
         $late_fee = $_POST['late_fee'] ?? 0;
         
-        // Get service details
-        $stmt = $pdo->prepare("SELECT * FROM services WHERE id = ?");
-        $stmt->execute([$service_id]);
-        $service = $stmt->fetch();
-        
-        if (!$service) {
-            $message = "Selected service not found";
+        if (empty($user_id)) {
+            $message = "Please select a customer";
             $message_type = "error";
-        } elseif (empty($user_id) || empty($amount) || empty($description)) {
-            $message = "Please fill all required fields";
+        } elseif (empty($selected_service_ids)) {
+            $message = "Please select at least one service";
+            $message_type = "error";
+        } elseif (empty($description)) {
+            $message = "Please enter service description";
             $message_type = "error";
         } else {
+            // Calculate total amount from selected services
+            $total_base_amount = 0;
+            $service_details = array();
+            
+            // Get service details and calculate total
+            foreach ($selected_service_ids as $index => $service_id) {
+                $stmt = $pdo->prepare("SELECT * FROM services WHERE id = ?");
+                $stmt->execute([$service_id]);
+                $service = $stmt->fetch();
+                
+                if ($service) {
+                    // Use custom amount if provided, otherwise use base amount
+                    $service_amount = isset($service_amounts[$index]) ? floatval($service_amounts[$index]) : $service['base_amount'];
+                    $total_base_amount += $service_amount;
+                    
+                    $service_details[] = array(
+                        'id' => $service['id'],
+                        'name' => $service['service_name'],
+                        'amount' => $service_amount,
+                        'original_price' => $service['base_amount']
+                    );
+                }
+            }
+            
             // Calculate totals
-            $tax_amount = ($amount * $tax_rate) / 100;
-            $total_amount = $amount + $tax_amount + $late_fee;
+            $tax_amount = ($total_base_amount * $tax_rate) / 100;
+            $total_amount = $total_base_amount + $tax_amount + $late_fee;
             
             // Generate professional bill number
             $bill_number = 'BL' . date('Ymd') . str_pad(rand(1, 9999), 4, '0', STR_PAD_LEFT);
             
             try {
-                $stmt = $pdo->prepare("INSERT INTO bills (user_id, bill_type, amount, due_date, description, bill_number, tax_rate, tax_amount, late_fee, total_amount, status) VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending')");
-                $result = $stmt->execute([$user_id, $service['service_name'], $amount, $description, $bill_number, $tax_rate, $tax_amount, $late_fee, $total_amount]);
+                // Start transaction
+                $pdo->beginTransaction();
+                
+                // Insert main bill - using correct column names for your bills table
+                $stmt = $pdo->prepare("INSERT INTO bills (user_id, bill_type, amount, due_date, description, bill_number, tax_rate, tax_amount, late_fee, total_amount, status) 
+                                      VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending')");
+                
+                // Create service names list
+                $service_names = array_map(function($s) { return $s['name']; }, $service_details);
+                $bill_type = implode(', ', $service_names);
+                
+                $result = $stmt->execute([
+                    $user_id, 
+                    $bill_type, 
+                    $total_base_amount, 
+                    $description, 
+                    $bill_number, 
+                    $tax_rate, 
+                    $tax_amount, 
+                    $late_fee, 
+                    $total_amount
+                ]);
                 
                 if ($result) {
+                    $bill_id = $pdo->lastInsertId();
+                    
+                    // Insert bill items for each service - using correct column name 'price'
+                    foreach ($service_details as $service) {
+                        $stmt = $pdo->prepare("INSERT INTO bill_items (bill_id, service_id, price) 
+                                              VALUES (?, ?, ?)");
+                        $stmt->execute([
+                            $bill_id,
+                            $service['id'],
+                            $service['amount']
+                        ]);
+                    }
+                    
+                    // Update the bill with service_details as JSON
+                    try {
+                        $service_details_json = json_encode($service_details);
+                        $stmt = $pdo->prepare("UPDATE bills SET service_details = ? WHERE id = ?");
+                        $stmt->execute([$service_details_json, $bill_id]);
+                    } catch (Exception $e) {
+                        // Column might not exist, that's okay
+                        error_log("Could not update service_details: " . $e->getMessage());
+                    }
+                    
+                    // Commit transaction
+                    $pdo->commit();
+                    
                     $message = "Bill created successfully! Bill Number: <strong>$bill_number</strong>";
                     $message_type = "success";
                     
@@ -57,7 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                         $pdo, 
                         $user_id, 
                         'New Bill Generated', 
-                        "A new bill of ₹" . number_format($total_amount, 2) . " has been generated for " . $service['service_name'],
+                        "A new bill of ₹" . number_format($total_amount, 2) . " has been generated for " . $bill_type,
                         'bill'
                     );
                     
@@ -66,10 +163,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     }
                     
                 } else {
+                    $pdo->rollBack();
                     $message = "Error creating bill.";
                     $message_type = "error";
                 }
             } catch (Exception $e) {
+                $pdo->rollBack();
                 $message = "Database error: " . $e->getMessage();
                 $message_type = "error";
                 error_log("Bill creation error: " . $e->getMessage());
@@ -80,7 +179,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
 // Get all bills with user information
 try {
-    $stmt = $pdo->query("SELECT b.*, u.full_name, u.phone, u.email, u.address, u.customer_code FROM bills b JOIN users u ON b.user_id = u.id ORDER BY b.created_at DESC");
+    $stmt = $pdo->query("SELECT b.*, u.full_name, u.phone, u.email, u.address, u.customer_code 
+                         FROM bills b 
+                         JOIN users u ON b.user_id = u.id 
+                         ORDER BY b.created_at DESC");
     $bills = $stmt->fetchAll();
 } catch (Exception $e) {
     $bills = [];
@@ -91,7 +193,10 @@ try {
 
 // Get all users for dropdown
 try {
-    $stmt = $pdo->query("SELECT id, full_name, phone, customer_code, address, email FROM users WHERE is_admin = FALSE AND is_active = TRUE");
+    $stmt = $pdo->query("SELECT id, full_name, phone, customer_code, address, email 
+                         FROM users 
+                         WHERE is_admin = FALSE AND is_active = TRUE 
+                         ORDER BY full_name");
     $users = $stmt->fetchAll();
 } catch (Exception $e) {
     $users = [];
@@ -100,15 +205,18 @@ try {
 
 // Get all services for dropdown
 try {
-    $stmt = $pdo->query("SELECT id, service_name, service_type, base_amount, description FROM services WHERE is_active = TRUE ORDER BY service_name");
+    $stmt = $pdo->query("SELECT id, service_name, service_type, base_amount, description 
+                         FROM services 
+                         WHERE is_active = TRUE 
+                         ORDER BY service_name");
     $services = $stmt->fetchAll();
 } catch (Exception $e) {
     $services = [];
     error_log("Services loading error: " . $e->getMessage());
 }
 
-// Get current date and time for display - Using server time with proper timezone
-date_default_timezone_set('Asia/Kathmandu'); // Set to your timezone
+// Get current date and time for display
+date_default_timezone_set('Asia/Kathmandu');
 $current_date = date('M d, Y');
 $current_time = date('h:i A');
 $current_datetime = date('M d, Y h:i A');
@@ -141,13 +249,75 @@ $current_datetime = date('M d, Y h:i A');
             display: none;
         }
         
-        .service-details {
-            background: #e8f4fd;
+        .selected-services-container {
+            background: white;
             padding: 1.5rem;
             border-radius: 8px;
             margin: 1rem 0;
-            border-left: 4px solid #3498db;
+            border: 2px solid #e9ecef;
             display: none;
+        }
+        
+        .selected-service-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+        
+        .service-amount-input {
+            width: 120px;
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            text-align: right;
+        }
+        
+        .remove-service-btn {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        
+        .remove-service-btn:hover {
+            background: #c0392b;
+        }
+        
+        .service-summary {
+            background: #e8f4fd;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            border-left: 4px solid #3498db;
+        }
+        
+        .service-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .summary-item {
+            text-align: center;
+            padding: 0.5rem;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .summary-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #3498db;
         }
         
         .bill-preview {
@@ -303,6 +473,103 @@ $current_datetime = date('M d, Y h:i A');
             margin-bottom: 1.5rem;
             flex-wrap: wrap;
         }
+        
+        .service-count-badge {
+            background: #3498db;
+            color: white;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-left: 0.5rem;
+        }
+        
+        /* Checkbox-based service selection */
+        .services-checkbox-container {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 1rem;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-top: 0.5rem;
+        }
+        
+        .service-checkbox-item {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .service-checkbox-item:hover {
+            background: #f8f9fa;
+            border-color: #3498db;
+        }
+        
+        .service-checkbox-item.selected {
+            background: #e8f4fd;
+            border-color: #3498db;
+            border-left: 4px solid #3498db;
+        }
+        
+        .service-checkbox {
+            margin-right: 1rem;
+            width: 1.2rem;
+            height: 1.2rem;
+            cursor: pointer;
+        }
+        
+        .service-info {
+            flex: 1;
+        }
+        
+        .service-name {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .service-price {
+            color: #27ae60;
+            font-weight: 500;
+        }
+        
+        .service-description {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            margin-top: 0.25rem;
+        }
+        
+        .select-all-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        
+        .select-all-checkbox {
+            margin-right: 0.5rem;
+            width: 1.2rem;
+            height: 1.2rem;
+            cursor: pointer;
+        }
+        
+        .select-all-label {
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .no-services-message {
+            text-align: center;
+            padding: 2rem;
+            color: #7f8c8d;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -395,27 +662,61 @@ $current_datetime = date('M d, Y h:i A');
                     </div>
                     
                     <div class="form-group">
-                        <label for="service_id">
+                        <label>
                             <i data-lucide="settings" class="form-icon"></i>
-                            Select Service *
+                            Select Services (Click to Select) *
+                            <span id="serviceCountBadge" class="service-count-badge">0 selected</span>
                         </label>
-                        <select id="service_id" name="service_id" class="form-control" required onchange="loadServiceDetails(this.value)">
-                            <option value="">Choose Service</option>
-                            <?php foreach ($services as $service): 
-                                $is_selected = $preselected_service_id == $service['id'];
-                            ?>
-                                <option value="<?php echo $service['id']; ?>" 
-                                        data-base-amount="<?php echo $service['base_amount']; ?>"
-                                        data-description="<?php echo htmlspecialchars($service['description']); ?>"
-                                        <?php echo $is_selected ? 'selected' : ''; ?>>
-                                    <?php echo $service['service_name'] . ' - ₹' . number_format($service['base_amount'], 2); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <small style="color: #666;">
-                            <a href="manage_services.php" style="color: #3498db;">Add new service</a> if not listed
+                        
+                        <div class="services-checkbox-container" id="servicesCheckboxContainer">
+                            <!-- Select All option -->
+                            <div class="select-all-container">
+                                <input type="checkbox" id="selectAllServices" class="select-all-checkbox" onchange="toggleSelectAll()">
+                                <label for="selectAllServices" class="select-all-label">Select All Services</label>
+                            </div>
+                            
+                            <!-- Services will be dynamically added here -->
+                            <?php if (count($services) > 0): ?>
+                                <?php foreach ($services as $service): ?>
+                                    <div class="service-checkbox-item" data-service-id="<?php echo $service['id']; ?>"
+                                         onclick="toggleServiceSelection(this, event)">
+                                        <input type="checkbox" 
+                                               name="services[]" 
+                                               value="<?php echo $service['id']; ?>" 
+                                               class="service-checkbox" 
+                                               id="service_<?php echo $service['id']; ?>"
+                                               data-base-amount="<?php echo $service['base_amount']; ?>"
+                                               data-service-name="<?php echo htmlspecialchars($service['service_name']); ?>"
+                                               <?php echo $preselected_service_id == $service['id'] ? 'checked' : ''; ?>
+                                               onchange="updateSelectedServices()">
+                                        <div class="service-info">
+                                            <div class="service-name"><?php echo $service['service_name']; ?></div>
+                                            <div class="service-price">₹<?php echo number_format($service['base_amount'], 2); ?></div>
+                                            <?php if (!empty($service['description'])): ?>
+                                                <div class="service-description"><?php echo $service['description']; ?></div>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="no-services-message">
+                                    <i data-lucide="package" style="width: 3rem; height: 3rem; margin-bottom: 1rem; display: block; margin-left: auto; margin-right: auto;"></i>
+                                    No services available. <a href="manage_services.php">Add services first</a>.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <small style="color: #666; display: block; margin-top: 0.5rem;">
+                            <a href="manage_services.php" style="color: #3498db;">
+                                <i data-lucide="plus" style="width: 1rem; height: 1rem; vertical-align: middle;"></i>
+                                Add new service
+                            </a> if not listed
                         </small>
                     </div>
+                </div>
+                
+                <!-- Hidden fields for service amounts -->
+                <div id="serviceAmountsContainer" style="display: none;">
+                    <!-- Service amount inputs will be dynamically added here -->
                 </div>
                 
                 <!-- Customer Details -->
@@ -440,40 +741,47 @@ $current_datetime = date('M d, Y h:i A');
                     </div>
                 </div>
                 
-                <!-- Service Details -->
-                <div id="serviceDetails" class="service-details">
+                <!-- Selected Services -->
+                <div id="selectedServicesContainer" class="selected-services-container">
                     <div class="section-header">
-                        <i data-lucide="settings" style="width: 1.5rem; height: 1.5rem;"></i>
-                        <h4>Service Information</h4>
+                        <i data-lucide="list" style="width: 1.5rem; height: 1.5rem;"></i>
+                        <h4>Selected Services <span id="selectedServicesCount">(0)</span></h4>
                     </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div>
-                            <strong>Service Name:</strong> <span id="service_name">-</span>
+                    <div id="selectedServicesList">
+                        <!-- Selected services will be dynamically added here -->
+                    </div>
+                    
+                    <!-- Service Summary -->
+                    <div id="serviceSummary" class="service-summary" style="display: none;">
+                        <div class="section-header">
+                            <i data-lucide="calculator" style="width: 1.5rem; height: 1.5rem;"></i>
+                            <h4>Service Summary</h4>
                         </div>
-                        <div>
-                            <strong>Base Price:</strong> ₹<span id="service_base_amount">0.00</span>
-                        </div>
-                        <div style="grid-column: 1 / -1;">
-                            <strong>Description:</strong> <span id="service_description">-</span>
+                        <div class="service-summary-grid">
+                            <div class="summary-item">
+                                <div>Number of Services</div>
+                                <div class="summary-value" id="summaryServiceCount">0</div>
+                            </div>
+                            <div class="summary-item">
+                                <div>Base Amount</div>
+                                <div class="summary-value" id="summaryBaseAmount">₹0.00</div>
+                            </div>
+                            <div class="summary-item">
+                                <div>Custom Adjustments</div>
+                                <div class="summary-value" id="summaryAdjustments">₹0.00</div>
+                            </div>
                         </div>
                     </div>
                 </div>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                    <div class="form-group">
-                        <label for="amount">
-                            <i data-lucide="dollar-sign" class="form-icon"></i>
-                            Amount (₹) *
-                        </label>
-                        <input type="number" id="amount" name="amount" class="form-control" step="0.01" min="0" required onchange="updateBillPreview()">
-                    </div>
-                    
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1rem;">
                     <div class="form-group">
                         <label for="tax_rate">
                             <i data-lucide="percent" class="form-icon"></i>
                             Tax Rate (%)
                         </label>
-                        <input type="number" id="tax_rate" name="tax_rate" class="form-control" step="0.01" min="0" max="30" value="13" onchange="updateBillPreview()">
+                        <input type="number" id="tax_rate" name="tax_rate" class="form-control" 
+                               step="0.01" min="0" max="30" value="13" onchange="updateBillPreview()">
                     </div>
                     
                     <div class="form-group">
@@ -481,17 +789,29 @@ $current_datetime = date('M d, Y h:i A');
                             <i data-lucide="credit-card" class="form-icon"></i>
                             Service Charge (₹)
                         </label>
-                        <input type="number" id="late_fee" name="late_fee" class="form-control" step="0.01" min="0" value="0" onchange="updateBillPreview()">
+                        <input type="number" id="late_fee" name="late_fee" class="form-control" 
+                               step="0.01" min="0" value="0" onchange="updateBillPreview()">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="total_base_amount">
+                            <i data-lucide="dollar-sign" class="form-icon"></i>
+                            Total Base Amount (₹)
+                        </label>
+                        <input type="text" id="total_base_amount" class="form-control" 
+                               readonly style="background: #f8f9fa; font-weight: bold;">
+                        <input type="hidden" id="amount" name="amount" value="0">
                     </div>
                 </div>
                 
-                <div class="form-group">
+                <div class="form-group" style="margin-top: 1rem;">
                     <label for="description">
                         <i data-lucide="file-text" class="form-icon"></i>
-                        Service Description *
+                        Bill Description *
                     </label>
                     <textarea id="description" name="description" class="form-control" rows="3" 
-                              placeholder="Detailed description of services provided..." required oninput="updateBillPreview()"></textarea>
+                              placeholder="Detailed description of services provided..." required 
+                              oninput="updateBillPreview()"></textarea>
                 </div>
                 
                 <!-- Bill Preview -->
@@ -519,17 +839,20 @@ $current_datetime = date('M d, Y h:i A');
                         </div>
                     </div>
                     
-                    <table class="bill-items">
+                    <table class="bill-items" id="previewBillItems">
                         <thead>
                             <tr>
-                                <th>Description</th>
+                                <th>Service Description</th>
                                 <th style="text-align: right;">Amount (₹)</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="previewServicesBody">
+                            <!-- Services will be added here dynamically -->
+                        </tbody>
+                        <tfoot>
                             <tr>
-                                <td id="preview_description">-</td>
-                                <td style="text-align: right;" id="preview_amount">0.00</td>
+                                <td><strong>Subtotal</strong></td>
+                                <td style="text-align: right;"><strong id="preview_subtotal">0.00</strong></td>
                             </tr>
                             <tr>
                                 <td>Tax (<span id="preview_tax_rate">0</span>%)</td>
@@ -543,7 +866,7 @@ $current_datetime = date('M d, Y h:i A');
                                 <td><strong>Total Amount Due</strong></td>
                                 <td style="text-align: right;"><strong id="preview_total">0.00</strong></td>
                             </tr>
-                        </tbody>
+                        </tfoot>
                     </table>
                     
                     <div class="bill-footer">
@@ -553,7 +876,9 @@ $current_datetime = date('M d, Y h:i A');
                     </div>
                 </div>
                 
-                <button type="submit" name="create_bill" class="btn" style="width: 100%; margin-top: 1rem; padding: 1rem; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                <button type="submit" name="create_bill" class="btn" 
+                        style="width: 100%; margin-top: 1rem; padding: 1rem; font-size: 1.1rem; 
+                               display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
                     <i data-lucide="file-plus" class="btn-icon"></i>
                     Generate Bill
                 </button>
@@ -572,13 +897,23 @@ $current_datetime = date('M d, Y h:i A');
                     <?php foreach ($bills as $bill): 
                         $status = $bill['status'];
                         $bill_datetime = date('M d, Y h:i A', strtotime($bill['created_at']));
+                        $service_details = isset($bill['service_details']) ? json_decode($bill['service_details'], true) : [];
                     ?>
                         <div class="bill-card <?php echo $status; ?>" data-status="<?php echo $status; ?>">
                             <div style="display: flex; justify-content: space-between; align-items: start;">
                                 <div style="flex: 1;">
                                     <h3>Bill #<?php echo $bill['bill_number']; ?></h3>
                                     <p><strong>Customer:</strong> <?php echo $bill['full_name']; ?> (<?php echo $bill['customer_code']; ?>)</p>
-                                    <p><strong>Service:</strong> <?php echo ucfirst($bill['bill_type']); ?></p>
+                                    <p><strong>Services:</strong> 
+                                        <?php 
+                                        if (!empty($service_details) && is_array($service_details)) {
+                                            $service_names = array_map(function($s) { return $s['name']; }, $service_details);
+                                            echo implode(', ', $service_names);
+                                        } else {
+                                            echo ucfirst($bill['bill_type']);
+                                        }
+                                        ?>
+                                    </p>
                                     <p><strong>Total Amount:</strong> ₹<?php echo number_format($bill['total_amount'], 2); ?></p>
                                     <p><strong>Bill Date:</strong> <?php echo $bill_datetime; ?></p>
                                     <?php if ($bill['description']): ?>
@@ -604,11 +939,14 @@ $current_datetime = date('M d, Y h:i A');
                             </div>
                             
                             <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
-                            <strong>Breakdown:</strong><br>
-                            Base: ₹<?php echo number_format($bill['amount'], 2); ?> | 
-                            Tax: ₹<?php echo number_format($bill['tax_amount'], 2); ?> | 
-                            Service Charge: ₹<?php echo number_format($bill['late_fee'] ?? 0, 2); ?>
-                        </div>
+                                <strong>Breakdown:</strong><br>
+                                Base: ₹<?php echo number_format($bill['amount'], 2); ?> | 
+                                Tax: ₹<?php echo number_format($bill['tax_amount'], 2); ?> | 
+                                Service Charge: ₹<?php echo number_format($bill['late_fee'] ?? 0, 2); ?>
+                                <?php if (!empty($service_details) && is_array($service_details)): ?>
+                                    <br><small>Services: <?php echo count($service_details); ?> item(s)</small>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     <?php endforeach; ?>
                 </div>
@@ -630,12 +968,23 @@ $current_datetime = date('M d, Y h:i A');
     </footer>
 
     <script>
+        // Service data for preview
+        const services = {
+            <?php foreach ($services as $service): ?>
+                '<?php echo $service['id']; ?>': {
+                    name: '<?php echo addslashes($service['service_name']); ?>',
+                    base_amount: <?php echo $service['base_amount']; ?>,
+                    description: '<?php echo addslashes($service['description']); ?>'
+                },
+            <?php endforeach; ?>
+        };
+
         // Customer data for preview
         const customers = {
             <?php foreach ($users as $user): ?>
                 '<?php echo $user['id']; ?>': {
                     code: '<?php echo $user['customer_code']; ?>',
-                    name: '<?php echo $user['full_name']; ?>',
+                    name: '<?php echo addslashes($user['full_name']); ?>',
                     phone: '<?php echo $user['phone']; ?>',
                     email: '<?php echo $user['email']; ?>',
                     address: '<?php echo addslashes($user['address']); ?>'
@@ -643,17 +992,9 @@ $current_datetime = date('M d, Y h:i A');
             <?php endforeach; ?>
         };
 
-        // Service data for preview
-        const services = {
-            <?php foreach ($services as $service): ?>
-                '<?php echo $service['id']; ?>': {
-                    name: '<?php echo $service['service_name']; ?>',
-                    base_amount: <?php echo $service['base_amount']; ?>,
-                    description: '<?php echo addslashes($service['description']); ?>'
-                },
-            <?php endforeach; ?>
-        };
-
+        // Store selected services with custom amounts
+        let selectedServices = [];
+        
         function loadCustomerDetails(userId) {
             const detailsDiv = document.getElementById('customerDetails');
             const customer = customers[userId];
@@ -669,43 +1010,219 @@ $current_datetime = date('M d, Y h:i A');
                 detailsDiv.style.display = 'none';
             }
         }
-
-        function loadServiceDetails(serviceId) {
-            const detailsDiv = document.getElementById('serviceDetails');
-            const service = services[serviceId];
+        
+        function toggleServiceSelection(serviceItem, event) {
+            // Don't toggle if the click was on the checkbox itself
+            if (event.target.type === 'checkbox') {
+                return;
+            }
             
-            if (service) {
-                document.getElementById('service_name').textContent = service.name;
-                document.getElementById('service_base_amount').textContent = service.base_amount.toFixed(2);
-                document.getElementById('service_description').textContent = service.description || 'No description';
-                
-                // Auto-fill amount and description
-                document.getElementById('amount').value = service.base_amount;
-                if (service.description) {
-                    document.getElementById('description').value = service.description;
+            const checkbox = serviceItem.querySelector('.service-checkbox');
+            checkbox.checked = !checkbox.checked;
+            updateSelectedServices();
+        }
+        
+        function toggleSelectAll() {
+            const selectAllCheckbox = document.getElementById('selectAllServices');
+            const allCheckboxes = document.querySelectorAll('.service-checkbox');
+            const serviceItems = document.querySelectorAll('.service-checkbox-item');
+            
+            allCheckboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+            
+            serviceItems.forEach(item => {
+                if (selectAllCheckbox.checked) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
                 }
+            });
+            
+            updateSelectedServices();
+        }
+        
+        function updateSelectedServices() {
+            const serviceCheckboxes = document.querySelectorAll('.service-checkbox');
+            const serviceItems = document.querySelectorAll('.service-checkbox-item');
+            const selectedServicesContainer = document.getElementById('selectedServicesContainer');
+            const selectedServicesList = document.getElementById('selectedServicesList');
+            const serviceSummary = document.getElementById('serviceSummary');
+            const serviceCountBadge = document.getElementById('serviceCountBadge');
+            const selectedServicesCount = document.getElementById('selectedServicesCount');
+            const serviceAmountsContainer = document.getElementById('serviceAmountsContainer');
+            
+            // Update visual selection state
+            serviceItems.forEach(item => {
+                const checkbox = item.querySelector('.service-checkbox');
+                if (checkbox.checked) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            // Update "Select All" checkbox
+            const allChecked = Array.from(serviceCheckboxes).every(cb => cb.checked);
+            const someChecked = Array.from(serviceCheckboxes).some(cb => cb.checked);
+            const selectAllCheckbox = document.getElementById('selectAllServices');
+            selectAllCheckbox.checked = allChecked;
+            selectAllCheckbox.indeterminate = someChecked && !allChecked;
+            
+            // Get selected services
+            const selectedCheckboxes = Array.from(serviceCheckboxes).filter(cb => cb.checked);
+            
+            // Clear current selection
+            selectedServicesList.innerHTML = '';
+            serviceAmountsContainer.innerHTML = '';
+            selectedServices = [];
+            
+            if (selectedCheckboxes.length === 0) {
+                selectedServicesContainer.style.display = 'none';
+                serviceSummary.style.display = 'none';
+                serviceCountBadge.textContent = '0 selected';
+                selectedServicesCount.textContent = '(0)';
+                updateTotals();
+                return;
+            }
+            
+            // Show container
+            selectedServicesContainer.style.display = 'block';
+            serviceSummary.style.display = 'block';
+            serviceCountBadge.textContent = selectedCheckboxes.length + ' selected';
+            selectedServicesCount.textContent = '(' + selectedCheckboxes.length + ')';
+            
+            // Create service items
+            selectedCheckboxes.forEach((checkbox, index) => {
+                const serviceId = checkbox.value;
+                const service = services[serviceId];
                 
-                detailsDiv.style.display = 'block';
+                if (service) {
+                    const serviceItem = {
+                        id: serviceId,
+                        name: service.name,
+                        baseAmount: service.base_amount,
+                        customAmount: service.base_amount,
+                        index: index
+                    };
+                    selectedServices.push(serviceItem);
+                    
+                    // Create HTML for service item
+                    const serviceDiv = document.createElement('div');
+                    serviceDiv.className = 'selected-service-item';
+                    serviceDiv.innerHTML = `
+                        <div style="flex: 1;">
+                            <strong>${service.name}</strong><br>
+                            <small>Base Price: ₹${service.base_amount.toFixed(2)}</small>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span>Amount:</span>
+                            <input type="number" 
+                                   class="service-amount-input" 
+                                   value="${service.base_amount.toFixed(2)}"
+                                   step="0.01"
+                                   min="0"
+                                   data-service-id="${serviceId}"
+                                   data-index="${index}"
+                                   onchange="updateServiceAmount(this)">
+                        </div>
+                        <button type="button" 
+                                class="remove-service-btn"
+                                onclick="removeService('${serviceId}')">
+                            <i data-lucide="x" style="width: 1rem; height: 1rem;"></i>
+                        </button>
+                    `;
+                    selectedServicesList.appendChild(serviceDiv);
+                    
+                    // Add hidden input for service amount
+                    const amountInput = document.createElement('input');
+                    amountInput.type = 'hidden';
+                    amountInput.name = 'service_amounts[]';
+                    amountInput.value = service.base_amount;
+                    amountInput.id = `service_amount_${serviceId}`;
+                    serviceAmountsContainer.appendChild(amountInput);
+                }
+            });
+            
+            // Update totals and preview
+            updateTotals();
+            updateBillPreview();
+            
+            // Initialize Lucide icons for new elements
+            lucide.createIcons();
+        }
+        
+        function updateServiceAmount(input) {
+            const serviceId = input.dataset.serviceId;
+            const index = parseInt(input.dataset.index);
+            const newAmount = parseFloat(input.value) || 0;
+            
+            // Update hidden input
+            const hiddenInput = document.getElementById(`service_amount_${serviceId}`);
+            if (hiddenInput) {
+                hiddenInput.value = newAmount;
+            }
+            
+            // Update selectedServices array
+            const serviceIndex = selectedServices.findIndex(s => s.id === serviceId);
+            if (serviceIndex !== -1) {
+                selectedServices[serviceIndex].customAmount = newAmount;
+                updateTotals();
                 updateBillPreview();
-            } else {
-                detailsDiv.style.display = 'none';
             }
         }
-
+        
+        function removeService(serviceId) {
+            // Uncheck the checkbox
+            const checkbox = document.querySelector(`input.service-checkbox[value="${serviceId}"]`);
+            if (checkbox) {
+                checkbox.checked = false;
+            }
+            
+            // Remove visual selection
+            const serviceItem = document.querySelector(`.service-checkbox-item[data-service-id="${serviceId}"]`);
+            if (serviceItem) {
+                serviceItem.classList.remove('selected');
+            }
+            
+            // Update selection
+            updateSelectedServices();
+        }
+        
+        function updateTotals() {
+            let totalBaseAmount = 0;
+            let totalCustomAmount = 0;
+            let totalAdjustments = 0;
+            
+            selectedServices.forEach(service => {
+                totalBaseAmount += service.baseAmount;
+                totalCustomAmount += service.customAmount;
+            });
+            
+            totalAdjustments = totalCustomAmount - totalBaseAmount;
+            
+            // Update summary display
+            document.getElementById('summaryServiceCount').textContent = selectedServices.length;
+            document.getElementById('summaryBaseAmount').textContent = '₹' + totalBaseAmount.toFixed(2);
+            document.getElementById('summaryAdjustments').textContent = (totalAdjustments >= 0 ? '+₹' : '-₹') + Math.abs(totalAdjustments).toFixed(2);
+            
+            // Update total base amount input
+            document.getElementById('total_base_amount').value = '₹' + totalCustomAmount.toFixed(2);
+            document.getElementById('amount').value = totalCustomAmount.toFixed(2);
+        }
+        
         function updateBillPreview() {
             const previewDiv = document.getElementById('billPreview');
             const userId = document.getElementById('user_id').value;
-            const serviceId = document.getElementById('service_id').value;
             const customer = customers[userId];
-            const service = services[serviceId];
+            const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
+            const serviceCharge = parseFloat(document.getElementById('late_fee').value) || 0;
+            const totalBaseAmount = parseFloat(document.getElementById('amount').value) || 0;
             
-            if (customer && service && document.getElementById('amount').value) {
-                // Calculate amounts
-                const amount = parseFloat(document.getElementById('amount').value) || 0;
-                const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
-                const serviceCharge = parseFloat(document.getElementById('late_fee').value) || 0;
-                const taxAmount = (amount * taxRate) / 100;
-                const totalAmount = amount + taxAmount + serviceCharge;
+            if (customer && selectedServices.length > 0 && totalBaseAmount > 0) {
+                // Calculate totals
+                const taxAmount = (totalBaseAmount * taxRate) / 100;
+                const totalAmount = totalBaseAmount + taxAmount + serviceCharge;
                 
                 // Get current date and time for preview
                 const now = new Date();
@@ -728,23 +1245,42 @@ $current_datetime = date('M d, Y h:i A');
                     hour12: true 
                 });
                 
-                // Update preview
+                // Update customer info in preview
                 document.getElementById('preview_customer').textContent = customer.name;
                 document.getElementById('preview_address').textContent = customer.address || 'Address not provided';
                 document.getElementById('preview_phone').textContent = customer.phone;
                 document.getElementById('preview_email').textContent = customer.email;
-                document.getElementById('preview_description').textContent = document.getElementById('description').value || service.description || 'Service description';
-                document.getElementById('preview_amount').textContent = '₹' + amount.toFixed(2);
+                
+                // Update services list in preview
+                const previewServicesBody = document.getElementById('previewServicesBody');
+                previewServicesBody.innerHTML = '';
+                
+                selectedServices.forEach(service => {
+                    const row = document.createElement('tr');
+                    const isAdjusted = service.customAmount !== service.baseAmount;
+                    const adjustmentText = isAdjusted ? 
+                        ` <small style="color: #666;">(Base: ₹${service.baseAmount.toFixed(2)})</small>` : '';
+                    
+                    row.innerHTML = `
+                        <td>${service.name}${adjustmentText}</td>
+                        <td style="text-align: right;">₹${service.customAmount.toFixed(2)}</td>
+                    `;
+                    previewServicesBody.appendChild(row);
+                });
+                
+                // Update totals in preview
+                document.getElementById('preview_subtotal').textContent = '₹' + totalBaseAmount.toFixed(2);
                 document.getElementById('preview_tax_rate').textContent = taxRate;
                 document.getElementById('preview_tax').textContent = '₹' + taxAmount.toFixed(2);
                 document.getElementById('preview_late_fee').textContent = '₹' + serviceCharge.toFixed(2);
                 document.getElementById('preview_total').textContent = '₹' + totalAmount.toFixed(2);
                 
-                // Update date and time in preview with current client time
+                // Update date and time in preview
                 document.getElementById('preview_date').textContent = previewDate;
                 document.getElementById('preview_time').textContent = previewTime;
                 document.getElementById('preview_generated_time').textContent = previewDateTime;
                 
+                // Show preview
                 previewDiv.style.display = 'block';
             } else {
                 previewDiv.style.display = 'none';
@@ -769,20 +1305,24 @@ $current_datetime = date('M d, Y h:i A');
         // Auto-select service if provided in URL
         document.addEventListener('DOMContentLoaded', function() {
             <?php if ($preselected_service_id): ?>
-                const serviceSelect = document.getElementById('service_id');
-                if (serviceSelect) {
-                    serviceSelect.value = '<?php echo $preselected_service_id; ?>';
-                    loadServiceDetails('<?php echo $preselected_service_id; ?>');
+                const checkbox = document.querySelector(`input.service-checkbox[value="<?php echo $preselected_service_id; ?>"]`);
+                if (checkbox) {
+                    checkbox.checked = true;
+                    const serviceItem = checkbox.closest('.service-checkbox-item');
+                    if (serviceItem) {
+                        serviceItem.classList.add('selected');
+                    }
+                    updateSelectedServices();
                 }
             <?php endif; ?>
             
             // Initialize time display
             updateCurrentTime();
-            // Update time every minute
             setInterval(updateCurrentTime, 60000);
+            
+            // Initialize Lucide icons
+            lucide.createIcons();
         });
-
-        lucide.createIcons();
     </script>
 </body>
 </html>
