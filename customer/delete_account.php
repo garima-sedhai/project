@@ -341,11 +341,11 @@ $first_letter = strtoupper(substr($initials, 0, 2));
 
     <div class="container">
         <div class="delete-container">
-            <!-- Back Navigation -->
+            <!-- Back Navigation - UPDATED: Now links to dashboard.php -->
             <div style="margin-bottom: 1.5rem;">
-                <a href="profile.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+                <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
                     <i data-lucide="arrow-left"></i>
-                    Back to Profile
+                    Back to Dashboard
                 </a>
             </div>
             
@@ -442,7 +442,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     <button type="submit" class="btn-danger" onclick="return confirmDelete()">
                         <i data-lucide="trash-2"></i> Permanently Delete Account
                     </button>
-                    <a href="profile.php" class="btn-secondary">
+                    <a href="dashboard.php" class="btn-secondary">
                         <i data-lucide="x"></i> Cancel
                     </a>
                 </div>

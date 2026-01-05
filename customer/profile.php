@@ -26,14 +26,28 @@ $stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0
 $stmt->execute([$user_id]);
 $pending_stats = $stmt->fetch();
 
-// Get recent activity
+// Get total paid bills
+$stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(amount), 0) as paid_amount FROM bills WHERE user_id = ? AND status = 'paid'");
+$stmt->execute([$user_id]);
+$paid_stats = $stmt->fetch();
+
+// Get recent activity (last 5 bills)
 $stmt = $pdo->prepare("SELECT b.*, s.service_name FROM bills b 
                       LEFT JOIN services s ON b.bill_type = s.service_type 
                       WHERE b.user_id = ? 
                       ORDER BY b.created_at DESC 
-                      LIMIT 3");
+                      LIMIT 5");
 $stmt->execute([$user_id]);
 $recent_bills = $stmt->fetchAll();
+
+// Get recent payments (last 5)
+$stmt = $pdo->prepare("SELECT p.*, b.bill_type FROM payments p 
+                      JOIN bills b ON p.bill_id = b.id 
+                      WHERE p.user_id = ? 
+                      ORDER BY p.payment_date DESC 
+                      LIMIT 5");
+$stmt->execute([$user_id]);
+$recent_payments = $stmt->fetchAll();
 
 // Get initials for header
 $first_name = $_SESSION['full_name'];
@@ -56,6 +70,12 @@ $first_letter = strtoupper(substr($initials, 0, 2));
     <style>
         .profile-main {
             padding: 2rem 0;
+        }
+        
+        .profile-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
         }
         
         .profile-header {
@@ -81,16 +101,20 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             font-size: 2.5rem;
             font-weight: bold;
             flex-shrink: 0;
+            border: 4px solid white;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         }
         
         .profile-info h1 {
             margin: 0 0 0.5rem 0;
             color: #075B5E;
+            font-size: 1.8rem;
         }
         
         .profile-info p {
             margin: 0.25rem 0;
             color: #666;
+            font-size: 0.95rem;
         }
         
         .profile-status {
@@ -131,23 +155,66 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         .info-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
+            gap: 1.5rem;
         }
         
         .info-item {
-            margin-bottom: 1rem;
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #075B5E;
         }
         
         .info-label {
             font-weight: 500;
             color: #666;
             font-size: 0.9rem;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
         .info-value {
             color: #333;
             font-size: 1rem;
+            font-weight: 500;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .stat-card {
+            text-align: center;
+            padding: 1.2rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            transition: transform 0.3s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #075B5E;
+            display: block;
+            line-height: 1.2;
+        }
+        
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+            display: block;
+            margin-top: 0.5rem;
         }
         
         .activity-list {
@@ -160,8 +227,13 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             display: flex;
             align-items: center;
             gap: 1rem;
-            padding: 0.75rem 0;
+            padding: 1rem;
             border-bottom: 1px solid #eee;
+            transition: background 0.3s;
+        }
+        
+        .activity-item:hover {
+            background: #f8f9fa;
         }
         
         .activity-item:last-child {
@@ -171,12 +243,12 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         .activity-icon {
             width: 40px;
             height: 40px;
-            background: #f8f9fa;
+            background: #075B5E;
+            color: white;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #075B5E;
             flex-shrink: 0;
         }
         
@@ -187,11 +259,18 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         .activity-title {
             font-weight: 500;
             margin: 0 0 0.25rem 0;
+            color: #333;
+        }
+        
+        .activity-desc {
+            color: #666;
+            font-size: 0.85rem;
+            margin: 0 0 0.25rem 0;
         }
         
         .activity-time {
-            color: #666;
-            font-size: 0.85rem;
+            color: #999;
+            font-size: 0.8rem;
         }
         
         .profile-actions {
@@ -205,11 +284,12 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.75rem 1.5rem;
-            border-radius: 4px;
+            padding: 0.9rem 1.8rem;
+            border-radius: 6px;
             text-decoration: none;
             font-weight: 500;
             transition: all 0.3s;
+            font-size: 0.95rem;
         }
         
         .action-btn-primary {
@@ -219,6 +299,8 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         
         .action-btn-primary:hover {
             background: #054749;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(7, 91, 94, 0.2);
         }
         
         .action-btn-secondary {
@@ -228,6 +310,8 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         
         .action-btn-secondary:hover {
             background: #5a6268;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(108, 117, 125, 0.2);
         }
         
         .action-btn-danger {
@@ -239,38 +323,24 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         .action-btn-danger:hover {
             background: #e74c3c;
             color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(231, 76, 60, 0.2);
         }
         
-        .quick-stats {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        
-        .stat-card {
+        .empty-state {
             text-align: center;
-            padding: 1rem;
-            background: #f8f9fa;
-            border-radius: 8px;
-            border: 1px solid #e9ecef;
-        }
-        
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #075B5E;
-            display: block;
-            line-height: 1.2;
-        }
-        
-        .stat-label {
-            font-size: 0.85rem;
+            padding: 2rem;
             color: #666;
-            display: block;
-            margin-top: 0.2rem;
         }
         
+        .empty-state i {
+            width: 48px;
+            height: 48px;
+            color: #ddd;
+            margin-bottom: 1rem;
+        }
+        
+        /* Mobile responsiveness */
         @media (max-width: 768px) {
             .profile-grid {
                 grid-template-columns: 1fr;
@@ -280,10 +350,15 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 grid-template-columns: 1fr;
             }
             
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
             .profile-header {
                 flex-direction: column;
                 text-align: center;
                 gap: 1rem;
+                padding: 1.5rem;
             }
             
             .profile-avatar {
@@ -292,17 +367,19 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 font-size: 2rem;
             }
             
-            .quick-stats {
-                grid-template-columns: repeat(2, 1fr);
+            .profile-info h1 {
+                font-size: 1.5rem;
             }
-        }
-        
-        /* Sidebar override for profile section */
-        .sidebar-item.active[href="profile.php"] {
-            background: #f0f7f7;
-            border-left-color: #075B5E;
-            color: #075B5E;
-            font-weight: 500;
+            
+            .profile-actions {
+                justify-content: center;
+            }
+            
+            .action-btn {
+                padding: 0.75rem 1.5rem;
+                width: 100%;
+                justify-content: center;
+            }
         }
     </style>
 </head>
@@ -423,7 +500,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
 
         <div class="container">
             <div class="profile-main">
-                <!-- Back to Dashboard -->
+                <!-- Back to Dashboard - UPDATED -->
                 <div style="margin-bottom: 1.5rem;">
                     <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
                         <i data-lucide="arrow-left"></i>
@@ -438,8 +515,11 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     </div>
                     <div class="profile-info">
                         <h1><?php echo htmlspecialchars($user['full_name']); ?></h1>
-                        <p><?php echo htmlspecialchars($user['email']); ?></p>
-                        <p>Customer ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
+                        <p><i data-lucide="mail" style="width: 16px; height: 16px;"></i> <?php echo htmlspecialchars($user['email']); ?></p>
+                        <?php if (!empty($user['phone'])): ?>
+                            <p><i data-lucide="phone" style="width: 16px; height: 16px;"></i> <?php echo htmlspecialchars($user['phone']); ?></p>
+                        <?php endif; ?>
+                        <p><i data-lucide="id-card" style="width: 16px; height: 16px;"></i> Customer ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
                         <div class="profile-status">
                             <i data-lucide="check-circle" style="width: 16px; height: 16px;"></i>
                             Account Active
@@ -448,80 +528,165 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 </div>
                 
                 <div class="profile-grid">
-                    <!-- Personal Information -->
-                    <div class="profile-section">
-                        <h2><i data-lucide="user"></i> Personal Information</h2>
-                        <div class="info-grid">
-                            <div class="info-item">
-                                <div class="info-label">Full Name</div>
-                                <div class="info-value"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                    <!-- Left Column: Personal Information & Stats -->
+                    <div>
+                        <!-- Personal Information -->
+                        <div class="profile-section">
+                            <h2><i data-lucide="user"></i> Personal Information</h2>
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="user"></i> Full Name
+                                    </div>
+                                    <div class="info-value"><?php echo htmlspecialchars($user['full_name']); ?></div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="mail"></i> Email Address
+                                    </div>
+                                    <div class="info-value"><?php echo htmlspecialchars($user['email']); ?></div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="phone"></i> Phone Number
+                                    </div>
+                                    <div class="info-value">
+                                        <?php echo !empty($user['phone']) ? htmlspecialchars($user['phone']) : '<span style="color: #999;">Not provided</span>'; ?>
+                                    </div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="id-card"></i> Customer Code
+                                    </div>
+                                    <div class="info-value"><?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></div>
+                                </div>
+                                
+                                <div class="info-item" style="grid-column: span 2;">
+                                    <div class="info-label">
+                                        <i data-lucide="map-pin"></i> Address
+                                    </div>
+                                    <div class="info-value">
+                                        <?php echo !empty($user['address']) ? nl2br(htmlspecialchars($user['address'])) : '<span style="color: #999;">Not provided</span>'; ?>
+                                    </div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="calendar"></i> Member Since
+                                    </div>
+                                    <div class="info-value"><?php echo date('F d, Y', strtotime($user['created_at'])); ?></div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">
+                                        <i data-lucide="clock"></i> Last Login
+                                    </div>
+                                    <div class="info-value">
+                                        <?php echo !empty($user['last_login']) ? date('F d, Y - h:i A', strtotime($user['last_login'])) : 'Never'; ?>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="info-item">
-                                <div class="info-label">Email Address</div>
-                                <div class="info-value"><?php echo htmlspecialchars($user['email']); ?></div>
-                            </div>
-                            <div class="info-item">
-                                <div class="info-label">Phone Number</div>
-                                <div class="info-value"><?php echo !empty($user['phone']) ? htmlspecialchars($user['phone']) : '<span style="color: #999;">Not provided</span>'; ?></div>
-                            </div>
-                            <div class="info-item">
-                                <div class="info-label">Customer Code</div>
-                                <div class="info-value"><?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></div>
-                            </div>
-                            <div class="info-item">
-                                <div class="info-label">Address</div>
-                                <div class="info-value"><?php echo !empty($user['address']) ? nl2br(htmlspecialchars($user['address'])) : '<span style="color: #999;">Not provided</span>'; ?></div>
-                            </div>
-                            <div class="info-item">
-                                <div class="info-label">Member Since</div>
-                                <div class="info-value"><?php echo date('F d, Y', strtotime($user['created_at'])); ?></div>
+                        </div>
+                        
+                        <!-- Account Statistics -->
+                        <div class="profile-section">
+                            <h2><i data-lucide="bar-chart"></i> Account Statistics</h2>
+                            <div class="stats-grid">
+                                <div class="stat-card">
+                                    <span class="stat-value"><?php echo $user['login_count']; ?></span>
+                                    <span class="stat-label">Total Logins</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
+                                    <span class="stat-label">Pending Bills</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="stat-value"><?php echo $paid_stats['total_paid']; ?></span>
+                                    <span class="stat-label">Paid Bills</span>
+                                </div>
+                                <div class="stat-card">
+                                    <span class="stat-value">₹<?php echo number_format($paid_stats['paid_amount'] ?? 0, 0); ?></span>
+                                    <span class="stat-label">Total Paid</span>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
-                    <!-- Account Stats -->
-                    <div class="profile-section">
-                        <h2><i data-lucide="bar-chart"></i> Account Overview</h2>
-                        <div class="quick-stats">
-                            <div class="stat-card">
-                                <span class="stat-value"><?php echo $user['login_count']; ?></span>
-                                <span class="stat-label">Total Logins</span>
-                            </div>
-                            <div class="stat-card">
-                                <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
-                                <span class="stat-label">Pending Bills</span>
-                            </div>
+                    <!-- Right Column: Recent Activity -->
+                    <div>
+                        <!-- Recent Bills -->
+                        <div class="profile-section">
+                            <h2><i data-lucide="file-text"></i> Recent Bills</h2>
+                            <?php if (count($recent_bills) > 0): ?>
+                                <ul class="activity-list">
+                                    <?php foreach ($recent_bills as $bill): ?>
+                                        <li class="activity-item">
+                                            <div class="activity-icon">
+                                                <i data-lucide="file-text"></i>
+                                            </div>
+                                            <div class="activity-content">
+                                                <div class="activity-title">
+                                                    <?php echo $bill['service_name'] ?? ucfirst($bill['bill_type']); ?>
+                                                </div>
+                                                <div class="activity-desc">
+                                                    ₹<?php echo number_format($bill['amount'], 2); ?>
+                                                    • Due: <?php echo date('M d, Y', strtotime($bill['due_date'])); ?>
+                                                </div>
+                                                <div class="activity-time">
+                                                    <?php if ($bill['status'] == 'pending'): ?>
+                                                        <span style="color: #e74c3c;">Pending</span>
+                                                    <?php else: ?>
+                                                        <span style="color: #27ae60;">Paid</span>
+                                                    <?php endif; ?>
+                                                    • Created: <?php echo date('M d, Y', strtotime($bill['created_at'])); ?>
+                                                </div>
+                                            </div>
+                                        </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            <?php else: ?>
+                                <div class="empty-state">
+                                    <i data-lucide="file-text"></i>
+                                    <p>No bills found</p>
+                                </div>
+                            <?php endif; ?>
                         </div>
                         
-                        <h3 style="color: #075B5E; margin: 1.5rem 0 1rem 0; font-size: 1.1rem;">
-                            <i data-lucide="clock"></i> Recent Activity
-                        </h3>
-                        
-                        <?php if (count($recent_bills) > 0): ?>
-                            <ul class="activity-list">
-                                <?php foreach ($recent_bills as $bill): ?>
-                                    <li class="activity-item">
-                                        <div class="activity-icon">
-                                            <i data-lucide="file-text"></i>
-                                        </div>
-                                        <div class="activity-content">
-                                            <div class="activity-title">
-                                                <?php echo $bill['service_name'] ?? ucfirst($bill['bill_type']); ?> Bill
+                        <!-- Recent Payments -->
+                        <div class="profile-section">
+                            <h2><i data-lucide="credit-card"></i> Recent Payments</h2>
+                            <?php if (count($recent_payments) > 0): ?>
+                                <ul class="activity-list">
+                                    <?php foreach ($recent_payments as $payment): ?>
+                                        <li class="activity-item">
+                                            <div class="activity-icon">
+                                                <i data-lucide="credit-card"></i>
                                             </div>
-                                            <div class="activity-time">
-                                                <?php echo date('M d, Y', strtotime($bill['created_at'])); ?> • 
-                                                ₹<?php echo number_format($bill['amount'], 2); ?> • 
-                                                <span style="color: <?php echo $bill['status'] == 'pending' ? '#e74c3c' : '#27ae60'; ?>;">
-                                                    <?php echo ucfirst($bill['status']); ?>
-                                                </span>
+                                            <div class="activity-content">
+                                                <div class="activity-title">
+                                                    <?php echo ucfirst($payment['bill_type']); ?> Payment
+                                                </div>
+                                                <div class="activity-desc">
+                                                    ₹<?php echo number_format($payment['payment_amount'], 2); ?>
+                                                    • <?php echo ucfirst($payment['payment_method'] ?? 'N/A'); ?>
+                                                </div>
+                                                <div class="activity-time">
+                                                    <?php echo date('M d, Y - h:i A', strtotime($payment['payment_date'])); ?>
+                                                </div>
                                             </div>
-                                        </div>
-                                    </li>
-                                <?php endforeach; ?>
-                            </ul>
-                        <?php else: ?>
-                            <p style="color: #666; text-align: center; padding: 1rem;">No recent activity</p>
-                        <?php endif; ?>
+                                        </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            <?php else: ?>
+                                <div class="empty-state">
+                                    <i data-lucide="credit-card"></i>
+                                    <p>No payments yet</p>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
                 
@@ -587,23 +752,6 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             if (event.key === 'Escape') {
                 closeProfileSidebar();
             }
-        });
-        
-        // Add click handlers to sidebar items
-        document.querySelectorAll('.sidebar-item').forEach(item => {
-            item.addEventListener('click', function(e) {
-                if (!this.href || this.href === '#') {
-                    e.preventDefault();
-                }
-                
-                // Remove active class from all items
-                document.querySelectorAll('.sidebar-item').forEach(i => {
-                    i.classList.remove('active');
-                });
-                
-                // Add active class to clicked item
-                this.classList.add('active');
-            });
         });
         
         // Make header higher z-index to stay on top

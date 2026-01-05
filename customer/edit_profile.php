@@ -82,6 +82,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
 }
 
+// Get user statistics for sidebar
+$stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0) as total_amount FROM bills WHERE user_id = ? AND status = 'pending'");
+$stmt->execute([$user_id]);
+$pending_stats = $stmt->fetch();
+
 // Get initials for header
 $first_name = $_SESSION['full_name'];
 $names = explode(' ', $first_name);
@@ -101,290 +106,478 @@ $first_letter = strtoupper(substr($initials, 0, 2));
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        .profile-container {
+        /* Remove any duplicate header styling */
+        body > .header {
+            display: none !important;
+        }
+        
+        .edit-profile-wrapper {
+            background: #f8f9fa;
+            min-height: 100vh;
+        }
+        
+        .edit-profile-container {
             max-width: 800px;
-            margin: 2rem auto;
-            padding: 0 1rem;
+            margin: 0 auto;
+            padding: 2rem 1rem;
         }
         
-        .profile-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
+        /* Back Navigation - Better styling */
+        .back-navigation {
             margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e9ecef;
         }
         
-        .profile-icon {
-            width: 60px;
-            height: 60px;
-            background: #075B5E;
-            color: white;
-            border-radius: 50%;
-            display: flex;
+        .back-link {
+            color: #075B5E;
+            text-decoration: none;
+            display: inline-flex;
             align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            font-weight: bold;
+            gap: 0.5rem;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: all 0.3s;
+            background: white;
+            border: 1px solid #e9ecef;
         }
         
-        .profile-form {
+        .back-link:hover {
+            background: #f0f7f7;
+            border-color: #075B5E;
+            transform: translateX(-5px);
+        }
+        
+        /* Main Content Card */
+        .edit-profile-card {
             background: white;
-            border-radius: 8px;
-            padding: 2rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            padding: 2.5rem;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+        }
+        
+        /* Header Section */
+        .edit-profile-header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 2px solid #f0f7f7;
+        }
+        
+        .edit-profile-title {
+            color: #075B5E;
+            font-size: 2rem;
+            margin: 0 0 0.5rem 0;
+            font-weight: 600;
+        }
+        
+        .edit-profile-subtitle {
+            color: #666;
+            font-size: 1.1rem;
+            margin: 0;
+        }
+        
+        /* Form Styling */
+        .edit-profile-form {
+            margin-top: 1.5rem;
         }
         
         .form-group {
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.8rem;
         }
         
         .form-group label {
             display: block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.75rem;
             font-weight: 500;
             color: #333;
+            font-size: 0.95rem;
         }
         
         .form-control {
             width: 100%;
-            padding: 0.75rem;
+            padding: 0.9rem 1rem;
             border: 1px solid #ddd;
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 1rem;
-            transition: border-color 0.3s;
+            transition: all 0.3s;
+            background: #fcfdfd;
         }
         
         .form-control:focus {
             outline: none;
             border-color: #075B5E;
             box-shadow: 0 0 0 3px rgba(7, 91, 94, 0.1);
+            background: white;
+        }
+        
+        .form-control:disabled {
+            background: #f5f5f5;
+            color: #888;
+            cursor: not-allowed;
         }
         
         .form-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 1rem;
+            gap: 1.5rem;
         }
         
+        .form-help {
+            display: block;
+            margin-top: 0.5rem;
+            color: #666;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+        
+        /* Form Actions */
         .form-actions {
             display: flex;
             gap: 1rem;
-            margin-top: 2rem;
-            padding-top: 1.5rem;
+            margin-top: 3rem;
+            padding-top: 2rem;
             border-top: 1px solid #eee;
         }
         
         .btn-primary {
             background: #075B5E;
             color: white;
-            padding: 0.75rem 1.5rem;
+            padding: 0.9rem 2rem;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 1rem;
-            transition: background 0.3s;
+            font-weight: 500;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex: 1;
+            justify-content: center;
         }
         
         .btn-primary:hover {
             background: #054749;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(7, 91, 94, 0.2);
         }
         
         .btn-secondary {
-            background: #6c757d;
-            color: white;
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 4px;
+            background: white;
+            color: #6c757d;
+            padding: 0.9rem 2rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 1rem;
+            font-weight: 500;
             text-decoration: none;
-            display: inline-block;
-            transition: background 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s;
+            flex: 1;
+            justify-content: center;
         }
         
         .btn-secondary:hover {
-            background: #5a6268;
+            background: #f8f9fa;
+            color: #495057;
+            border-color: #6c757d;
+            transform: translateY(-2px);
         }
         
+        /* Alert Messages */
         .alert {
-            padding: 1rem;
-            border-radius: 4px;
+            padding: 1rem 1.25rem;
+            border-radius: 6px;
             margin-bottom: 1.5rem;
+            border-left: 4px solid transparent;
         }
         
         .alert-success {
-            background: #d4edda;
+            background: #f0f9f1;
             color: #155724;
-            border: 1px solid #c3e6cb;
+            border-left-color: #27ae60;
         }
         
         .alert-error {
+            background: #fdf2f2;
+            color: #721c24;
+            border-left-color: #e74c3c;
+        }
+        
+        /* Additional Options */
+        .additional-options {
+            margin-top: 3rem;
+            padding: 2rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .additional-options h3 {
+            color: #075B5E;
+            margin: 0 0 1.5rem 0;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .option-buttons {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        .option-btn {
+            color: #075B5E;
+            text-decoration: none;
+            padding: 0.9rem 1.5rem;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        .option-btn:hover {
+            background: #f0f7f7;
+            border-color: #075B5E;
+            transform: translateY(-2px);
+        }
+        
+        .option-btn-danger {
+            color: #e74c3c;
+            border-color: #f5c6cb;
+        }
+        
+        .option-btn-danger:hover {
             background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            border-color: #e74c3c;
         }
         
-        .message {
-            margin-bottom: 1rem;
-            padding: 1rem;
-            border-radius: 4px;
-        }
-        
-        .success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        
+        /* Responsive Design */
         @media (max-width: 768px) {
+            .edit-profile-container {
+                padding: 1rem;
+            }
+            
+            .edit-profile-card {
+                padding: 1.5rem;
+            }
+            
             .form-row {
                 grid-template-columns: 1fr;
+                gap: 1rem;
             }
             
             .form-actions {
                 flex-direction: column;
             }
             
-            .profile-container {
-                padding: 0 0.5rem;
+            .btn-primary,
+            .btn-secondary {
+                width: 100%;
             }
+            
+            .option-buttons {
+                flex-direction: column;
+            }
+            
+            .option-btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .edit-profile-title {
+                font-size: 1.5rem;
+            }
+            
+            .edit-profile-subtitle {
+                font-size: 1rem;
+            }
+        }
+        
+        /* Textarea specific styling */
+        textarea.form-control {
+            min-height: 120px;
+            resize: vertical;
+            font-family: inherit;
+            line-height: 1.5;
+        }
+        
+        /* Input focus states */
+        .form-control:focus {
+            background: white;
+            border-color: #075B5E;
+        }
+        
+        /* Section spacing */
+        .form-section {
+            margin-bottom: 2.5rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .form-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        /* Field description */
+        .field-description {
+            display: block;
+            margin-top: 0.5rem;
+            color: #666;
+            font-size: 0.85rem;
         }
     </style>
 </head>
 <body>
-    <!-- Header -->
-    <header class="header">
-        <div class="container">
-            <nav class="navbar">
-                <div class="logo">BillPay Pro</div>
-                <ul class="nav-links">
-                    <li><a href="dashboard.php">Dashboard</a></li>
-                    <li><a href="bills.php">My Bills</a></li>
-                    <li><a href="payment_history.php">Payment History</a></li>
-                    <li style="display: flex; align-items: center;">
-                        <div class="profile-menu-trigger" onclick="window.location.href='profile.php'">
-                            <div class="first-letter-circle">
-                                <?php echo $first_letter; ?>
-                            </div>
-                            <div class="user-name-display">
-                                <span><?php echo $_SESSION['full_name']; ?></span>
-                            </div>
-                        </div>
-                        <a href="logout.php" style="margin-left: 15px;">Logout</a>
-                    </li>
-                </ul>
-            </nav>
-        </div>
-    </header>
-
-    <div class="container">
-        <div class="profile-container">
+    <div class="edit-profile-wrapper">
+        <div class="edit-profile-container">
             <!-- Back Navigation -->
-            <div style="margin-bottom: 1.5rem;">
-                <a href="profile.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+            <div class="back-navigation">
+                <a href="dashboard.php" class="back-link">
                     <i data-lucide="arrow-left"></i>
-                    Back to Profile
+                    Back to Dashboard
                 </a>
             </div>
             
-            <!-- Profile Header -->
-            <div class="profile-header">
-                <div class="profile-icon">
-                    <?php echo $first_letter; ?>
+            <!-- Main Content Card -->
+            <div class="edit-profile-card">
+                <!-- Header Section -->
+                <div class="edit-profile-header">
+                    <h1 class="edit-profile-title">Edit Profile</h1>
+                    <p class="edit-profile-subtitle">Update your personal information</p>
                 </div>
-                <div>
-                    <h1>Edit Profile</h1>
-                    <p>Update your personal information</p>
-                </div>
-            </div>
-            
-            <!-- Messages -->
-            <?php if ($message): ?>
-                <div class="alert alert-<?php echo $message_type; ?>">
-                    <?php echo $message; ?>
-                </div>
-            <?php endif; ?>
-            
-            <!-- Edit Profile Form -->
-            <form method="POST" action="" class="profile-form">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="full_name">Full Name *</label>
-                        <input type="text" id="full_name" name="full_name" class="form-control" 
-                               value="<?php echo htmlspecialchars($user['full_name']); ?>" required>
+                
+                <!-- Messages -->
+                <?php if ($message): ?>
+                    <div class="alert alert-<?php echo $message_type; ?>">
+                        <?php echo $message; ?>
+                    </div>
+                <?php endif; ?>
+                
+                <!-- Edit Profile Form -->
+                <form method="POST" action="" class="edit-profile-form">
+                    <!-- Basic Information Section -->
+                    <div class="form-section">
+                        <h3 style="color: #075B5E; margin-bottom: 1.5rem; font-size: 1.2rem;">
+                            <i data-lucide="user" style="width: 18px; height: 18px; margin-right: 0.5rem;"></i>
+                            Basic Information
+                        </h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="full_name">Full Name *</label>
+                                <input type="text" id="full_name" name="full_name" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['full_name']); ?>" required>
+                                <span class="field-description">Your complete name as it should appear on bills</span>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="email">Email Address *</label>
+                                <input type="email" id="email" name="email" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['email']); ?>" required>
+                                <span class="field-description">Used for account notifications and communication</span>
+                            </div>
+                        </div>
                     </div>
                     
-                    <div class="form-group">
-                        <label for="email">Email Address *</label>
-                        <input type="email" id="email" name="email" class="form-control" 
-                               value="<?php echo htmlspecialchars($user['email']); ?>" required>
-                    </div>
-                </div>
-                
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="phone">Phone Number</label>
-                        <input type="tel" id="phone" name="phone" class="form-control" 
-                               value="<?php echo htmlspecialchars($user['phone'] ?? ''); ?>" 
-                               pattern="[0-9]{10}" maxlength="10">
-                        <small style="color: #666; font-size: 0.85rem;">10 digits without spaces or dashes</small>
+                    <!-- Contact Information Section -->
+                    <div class="form-section">
+                        <h3 style="color: #075B5E; margin-bottom: 1.5rem; font-size: 1.2rem;">
+                            <i data-lucide="phone" style="width: 18px; height: 18px; margin-right: 0.5rem;"></i>
+                            Contact Information
+                        </h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="phone">Phone Number</label>
+                                <input type="tel" id="phone" name="phone" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['phone'] ?? ''); ?>" 
+                                       pattern="[0-9]{10}" maxlength="10">
+                                <span class="field-description">10 digits without spaces or dashes</span>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="customer_code">Customer Code</label>
+                                <input type="text" id="customer_code" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?>" disabled>
+                                <span class="field-description">Unique identifier for your account</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="address">Address</label>
+                            <textarea id="address" name="address" class="form-control" rows="4"><?php echo htmlspecialchars($user['address'] ?? ''); ?></textarea>
+                            <span class="field-description">Your complete postal address</span>
+                        </div>
                     </div>
                     
-                    <div class="form-group">
-                        <label for="customer_code">Customer Code</label>
-                        <input type="text" id="customer_code" class="form-control" 
-                               value="<?php echo htmlspecialchars($user['customer_code'] ?? ''); ?>" disabled>
-                        <small style="color: #666; font-size: 0.85rem;">This cannot be changed</small>
+                    <!-- Account Information Section -->
+                    <div class="form-section">
+                        <h3 style="color: #075B5E; margin-bottom: 1.5rem; font-size: 1.2rem;">
+                            <i data-lucide="info" style="width: 18px; height: 18px; margin-right: 0.5rem;"></i>
+                            Account Information
+                        </h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Account Created</label>
+                                <input type="text" class="form-control" 
+                                       value="<?php echo date('F d, Y', strtotime($user['created_at'])); ?>" disabled>
+                                <span class="field-description">Date you joined BillPay Pro</span>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Last Updated</label>
+                                <input type="text" class="form-control" 
+                                       value="<?php echo !empty($user['updated_at']) ? date('F d, Y', strtotime($user['updated_at'])) : 'Never'; ?>" disabled>
+                                <span class="field-description">When your profile was last modified</span>
+                            </div>
+                        </div>
                     </div>
-                </div>
+                    
+                    <!-- Form Actions -->
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary">
+                            <i data-lucide="save"></i> Save Changes
+                        </button>
+                        <a href="dashboard.php" class="btn-secondary">
+                            <i data-lucide="x"></i> Cancel
+                        </a>
+                    </div>
+                </form>
                 
-                <div class="form-group">
-                    <label for="address">Address</label>
-                    <textarea id="address" name="address" class="form-control" rows="4"><?php echo htmlspecialchars($user['address'] ?? ''); ?></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label>Account Created</label>
-                    <input type="text" class="form-control" 
-                           value="<?php echo date('F d, Y', strtotime($user['created_at'])); ?>" disabled>
-                </div>
-                
-                <div class="form-actions">
-                    <button type="submit" class="btn-primary">
-                        <i data-lucide="save"></i> Save Changes
-                    </button>
-                    <a href="profile.php" class="btn-secondary">
-                        <i data-lucide="x"></i> Cancel
-                    </a>
-                </div>
-            </form>
-            
-            <!-- Additional Options -->
-            <div style="margin-top: 2rem; padding: 1.5rem; background: #f8f9fa; border-radius: 8px;">
-                <h3 style="color: #075B5E; margin-bottom: 1rem;">Account Management</h3>
-                <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                    <a href="change_password.php" style="color: #075B5E; text-decoration: none; padding: 0.75rem 1rem; background: white; border-radius: 4px; border: 1px solid #ddd;">
-                        <i data-lucide="key"></i> Change Password
-                    </a>
-                    <a href="delete_account.php" style="color: #e74c3c; text-decoration: none; padding: 0.75rem 1rem; background: white; border-radius: 4px; border: 1px solid #f5c6cb;">
-                        <i data-lucide="trash-2"></i> Delete Account
-                    </a>
+                <!-- Additional Options -->
+                <div class="additional-options">
+                    <h3>
+                        <i data-lucide="settings"></i>
+                        Account Management
+                    </h3>
+                    <div class="option-buttons">
+                        <a href="change_password.php" class="option-btn">
+                            <i data-lucide="key"></i> Change Password
+                        </a>
+                        <a href="delete_account.php" class="option-btn option-btn-danger">
+                            <i data-lucide="trash-2"></i> Delete Account
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-
-    <footer class="footer">
-        <div class="container">
-            <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
-        </div>
-    </footer>
 
     <script>
         lucide.createIcons();
@@ -393,24 +586,98 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         document.querySelector('form').addEventListener('submit', function(e) {
             const phone = document.getElementById('phone').value;
             const email = document.getElementById('email').value;
+            let isValid = true;
             
             // Validate phone if provided
             if (phone && !/^[0-9]{10}$/.test(phone)) {
-                e.preventDefault();
-                alert('Please enter a valid 10-digit phone number.');
-                return false;
+                alert('Please enter a valid 10-digit phone number (numbers only, no spaces or dashes).');
+                isValid = false;
             }
             
             // Validate email format
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(email)) {
-                e.preventDefault();
                 alert('Please enter a valid email address.');
+                isValid = false;
+            }
+            
+            // Validate name
+            const name = document.getElementById('full_name').value;
+            if (name.trim().length < 2) {
+                alert('Please enter a valid full name.');
+                isValid = false;
+            }
+            
+            if (!isValid) {
+                e.preventDefault();
                 return false;
             }
             
+            // Show loading state
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalText = submitBtn.innerHTML;
+            submitBtn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Saving...';
+            submitBtn.disabled = true;
+            
+            // Create spin animation
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+            
             return true;
         });
+        
+        // Auto-format phone number
+        document.getElementById('phone').addEventListener('input', function(e) {
+            let value = e.target.value.replace(/\D/g, '');
+            if (value.length > 10) {
+                value = value.substring(0, 10);
+            }
+            e.target.value = value;
+        });
+        
+        // Real-time email validation
+        document.getElementById('email').addEventListener('blur', function(e) {
+            const email = e.target.value;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (email && !emailRegex.test(email)) {
+                e.target.style.borderColor = '#e74c3c';
+                e.target.style.boxShadow = '0 0 0 3px rgba(231, 76, 60, 0.1)';
+            } else {
+                e.target.style.borderColor = '#ddd';
+                e.target.style.boxShadow = 'none';
+            }
+        });
+        
+        // Add character counter for address
+        const addressField = document.getElementById('address');
+        const charCounter = document.createElement('div');
+        charCounter.className = 'field-description';
+        charCounter.style.marginTop = '0.5rem';
+        charCounter.style.color = '#666';
+        charCounter.style.fontSize = '0.85rem';
+        charCounter.style.textAlign = 'right';
+        
+        function updateCharCount() {
+            const count = addressField.value.length;
+            charCounter.textContent = `${count} characters`;
+            if (count > 500) {
+                charCounter.style.color = '#e74c3c';
+            } else if (count > 250) {
+                charCounter.style.color = '#f39c12';
+            } else {
+                charCounter.style.color = '#666';
+            }
+        }
+        
+        addressField.addEventListener('input', updateCharCount);
+        addressField.parentNode.appendChild(charCounter);
+        updateCharCount(); // Initialize count
     </script>
 </body>
 </html>

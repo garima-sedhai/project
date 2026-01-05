@@ -94,20 +94,20 @@ $first_letter = strtoupper(substr($initials, 0, 2));
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        .profile-container {
+        .password-container {
             max-width: 600px;
             margin: 2rem auto;
             padding: 0 1rem;
         }
         
-        .profile-header {
+        .password-header {
             display: flex;
             align-items: center;
             gap: 1rem;
             margin-bottom: 2rem;
         }
         
-        .profile-icon {
+        .password-icon {
             width: 60px;
             height: 60px;
             background: #075B5E;
@@ -267,12 +267,19 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             color: #666;
         }
         
+        .security-tips {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        
         @media (max-width: 768px) {
             .form-actions {
                 flex-direction: column;
             }
             
-            .profile-container {
+            .password-container {
                 padding: 0 0.5rem;
             }
         }
@@ -305,18 +312,18 @@ $first_letter = strtoupper(substr($initials, 0, 2));
     </header>
 
     <div class="container">
-        <div class="profile-container">
-            <!-- Back Navigation -->
+        <div class="password-container">
+            <!-- Back Navigation - UPDATED: Now links to dashboard.php -->
             <div style="margin-bottom: 1.5rem;">
-                <a href="profile.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+                <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
                     <i data-lucide="arrow-left"></i>
-                    Back to Profile
+                    Back to Dashboard
                 </a>
             </div>
             
-            <!-- Profile Header -->
-            <div class="profile-header">
-                <div class="profile-icon">
+            <!-- Password Header -->
+            <div class="password-header">
+                <div class="password-icon">
                     <i data-lucide="key"></i>
                 </div>
                 <div>
@@ -397,14 +404,14 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     <button type="submit" class="btn-primary">
                         <i data-lucide="save"></i> Change Password
                     </button>
-                    <a href="profile.php" class="btn-secondary">
+                    <a href="dashboard.php" class="btn-secondary">
                         <i data-lucide="x"></i> Cancel
                     </a>
                 </div>
             </form>
             
             <!-- Security Tips -->
-            <div style="margin-top: 2rem; padding: 1.5rem; background: #f8f9fa; border-radius: 8px;">
+            <div class="security-tips">
                 <h3 style="color: #075B5E; margin-bottom: 1rem;">
                     <i data-lucide="shield"></i> Security Tips
                 </h3>
