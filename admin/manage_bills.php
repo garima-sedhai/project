@@ -15,29 +15,12 @@ $message_type = '';
 // Get service ID from URL if provided
 $preselected_service_id = isset($_GET['service_id']) ? $_GET['service_id'] : null;
 
-// FIRST: Check and create necessary database tables
+// FIRST: Check if bills table has service_details column, add it if not
 try {
-    // Check if bill_items table exists
-    $stmt = $pdo->query("SHOW TABLES LIKE 'bill_items'");
-    if ($stmt->rowCount() == 0) {
-        // Create bill_items table
-        $pdo->exec("CREATE TABLE bill_items (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            bill_id INT NOT NULL,
-            service_id INT NOT NULL,
-            price DECIMAL(10,2) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX (bill_id),
-            INDEX (service_id)
-        )");
-        error_log("Created bill_items table");
-    }
-    
-    // Check if bills table has service_details column
     $stmt = $pdo->query("SHOW COLUMNS FROM bills LIKE 'service_details'");
     if ($stmt->rowCount() == 0) {
         // Add service_details column
-        $pdo->exec("ALTER TABLE bills ADD COLUMN service_details TEXT NULL AFTER total_amount");
+        $pdo->exec("ALTER TABLE bills ADD COLUMN service_details TEXT NULL");
         error_log("Added service_details column to bills table");
     }
 } catch (Exception $e) {
@@ -99,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 // Start transaction
                 $pdo->beginTransaction();
                 
-                // Insert main bill - using correct column names for your bills table
+                // Insert main bill
                 $stmt = $pdo->prepare("INSERT INTO bills (user_id, bill_type, amount, due_date, description, bill_number, tax_rate, tax_amount, late_fee, total_amount, status) 
                                       VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending')");
                 
@@ -122,7 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 if ($result) {
                     $bill_id = $pdo->lastInsertId();
                     
-                    // Insert bill items for each service - using correct column name 'price'
+                    // Insert bill items for each service
                     foreach ($service_details as $service) {
                         $stmt = $pdo->prepare("INSERT INTO bill_items (bill_id, service_id, price) 
                                               VALUES (?, ?, ?)");
@@ -177,13 +160,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
 }
 
-// Get all bills with user information
+// Get all bills with user information - UPDATED to include bill_items data
 try {
     $stmt = $pdo->query("SELECT b.*, u.full_name, u.phone, u.email, u.address, u.customer_code 
                          FROM bills b 
                          JOIN users u ON b.user_id = u.id 
                          ORDER BY b.created_at DESC");
     $bills = $stmt->fetchAll();
+    
+    // For each bill, get the service details from bill_items
+    foreach ($bills as &$bill) {
+        $bill_id = $bill['id'];
+        $stmt = $pdo->prepare("SELECT s.service_name, bi.price 
+                               FROM bill_items bi 
+                               JOIN services s ON bi.service_id = s.id 
+                               WHERE bi.bill_id = ?");
+        $stmt->execute([$bill_id]);
+        $bill_services = $stmt->fetchAll();
+        $bill['services_list'] = $bill_services;
+    }
 } catch (Exception $e) {
     $bills = [];
     $message = "Error loading bills: " . $e->getMessage();
@@ -232,6 +227,7 @@ $current_datetime = date('M d, Y h:i A');
     <!-- Lucide Icons CDN -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
+        /* ... (ALL THE CSS STYLES FROM PREVIOUS CODE - KEEP THEM EXACTLY AS THEY WERE) ... */
         .bill-creation {
             background: #f8f9fa;
             padding: 2rem;
@@ -898,6 +894,7 @@ $current_datetime = date('M d, Y h:i A');
                         $status = $bill['status'];
                         $bill_datetime = date('M d, Y h:i A', strtotime($bill['created_at']));
                         $service_details = isset($bill['service_details']) ? json_decode($bill['service_details'], true) : [];
+                        $services_list = isset($bill['services_list']) ? $bill['services_list'] : [];
                     ?>
                         <div class="bill-card <?php echo $status; ?>" data-status="<?php echo $status; ?>">
                             <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -908,6 +905,9 @@ $current_datetime = date('M d, Y h:i A');
                                         <?php 
                                         if (!empty($service_details) && is_array($service_details)) {
                                             $service_names = array_map(function($s) { return $s['name']; }, $service_details);
+                                            echo implode(', ', $service_names);
+                                        } elseif (!empty($services_list)) {
+                                            $service_names = array_map(function($s) { return $s['service_name']; }, $services_list);
                                             echo implode(', ', $service_names);
                                         } else {
                                             echo ucfirst($bill['bill_type']);
@@ -945,6 +945,8 @@ $current_datetime = date('M d, Y h:i A');
                                 Service Charge: ₹<?php echo number_format($bill['late_fee'] ?? 0, 2); ?>
                                 <?php if (!empty($service_details) && is_array($service_details)): ?>
                                     <br><small>Services: <?php echo count($service_details); ?> item(s)</small>
+                                <?php elseif (!empty($services_list)): ?>
+                                    <br><small>Services: <?php echo count($services_list); ?> item(s)</small>
                                 <?php endif; ?>
                             </div>
                         </div>
