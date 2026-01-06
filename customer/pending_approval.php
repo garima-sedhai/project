@@ -1,6 +1,9 @@
 <?php
+// For customer files:
+$base_path = dirname(__DIR__);
+require_once $base_path . '/includes/config.php';
 session_start();
-require_once '../includes/config.php';
+require_once $base_path . '/includes/db_connection.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {

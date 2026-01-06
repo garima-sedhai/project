@@ -1,10 +1,13 @@
 <?php
 // ============================================
-// SESSION & SECURITY SETTINGS (Must be at top)
+// SESSION & SECURITY SETTINGS
 // ============================================
-ini_set('session.cookie_httponly', 1);
-ini_set('session.use_only_cookies', 1);
-ini_set('session.cookie_secure', 0); // Set to 1 if using HTTPS
+// Only set session ini if session hasn't started yet
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.cookie_httponly', 1);
+    ini_set('session.use_only_cookies', 1);
+    ini_set('session.cookie_secure', 0); // Set to 1 if using HTTPS
+}
 
 // ============================================
 // DEBUG MODE SETTINGS
@@ -68,7 +71,7 @@ try {
 define('SMTP_HOST', 'smtp.gmail.com');          // Gmail SMTP server
 define('SMTP_PORT', 587);                       // Port for TLS
 define('SMTP_USERNAME', 'sedhaigarima183@gmail.com'); // Your Gmail
-define('SMTP_PASSWORD', 'your-app-password');   // Your 16-digit App Password
+define('SMTP_PASSWORD', 'syrd gvea pgai xbdr');   // Your 16-digit App Password
 define('SMTP_FROM_EMAIL', 'sedhaigarima183@gmail.com'); // Same as SMTP_USERNAME
 define('SMTP_FROM_NAME', 'BillPay Pro System'); // Display name for emails
 

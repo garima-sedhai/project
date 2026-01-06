@@ -1,7 +1,9 @@
 <?php
+// For admin files:
+$base_path = dirname(dirname(__DIR__));
+require_once $base_path . '/includes/config.php';
 session_start();
-require_once '../includes/config.php';
-require_once '../includes/db_connection.php';
+require_once $base_path . '/includes/db_connection.php';
 
 // Redirect if not admin
 if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {

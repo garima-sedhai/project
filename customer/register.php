@@ -1,21 +1,24 @@
 <?php
-// Calculate correct base path (since register.php is in customer folder)
-$base_path = dirname(__DIR__); // This goes up one level from customer folder
+// Start output buffering
+ob_start();
 
-// Include configuration FIRST (before session_start)
+// For customer files:
+$base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
 
-// Now start the session
-session_start();
+// Check if we should skip email sending for testing
+$skip_email = isset($_GET['skip_email']) || (defined('EMAIL_DEBUG') && EMAIL_DEBUG);
 
-// Include database connection
+session_start();
 require_once $base_path . '/includes/db_connection.php';
 
 // If already logged in, redirect to dashboard
 if (isset($_SESSION['user_id'])) {
     if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) {
+        ob_end_clean();
         header("Location: ../admin/index.php");
     } else {
+        ob_end_clean();
         header("Location: dashboard.php");
     }
     exit();
@@ -102,7 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['temp_full_name'] = $full_name;
                 
                 // Send actual OTP email
-                require_once BASE_PATH . '/includes/email_functions.php';
+                require_once $base_path . '/includes/email_functions.php';
                 $email_sent = sendOTPEmail($email, $full_name, $otp);
                 
                 if ($email_sent) {

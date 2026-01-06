@@ -1,12 +1,9 @@
 <?php
+// For customer files:
+$base_path = dirname(__DIR__);
+require_once $base_path . '/includes/config.php';
 session_start();
-
-// Set a base path constant for includes
-define('BASE_PATH', dirname(dirname(__FILE__)));
-
-// Include configuration
-require_once BASE_PATH . '/includes/config.php';
-require_once BASE_PATH . '/includes/db_connection.php';
+require_once $base_path . '/includes/db_connection.php';
 
 // Redirect if not logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
