@@ -1,10 +1,27 @@
 <?php
 session_start();
-include '../includes/config.php';
+
+// Set a base path constant for includes
+define('BASE_PATH', dirname(dirname(__FILE__)));
+
+// Include configuration
+require_once BASE_PATH . '/includes/config.php';
+require_once BASE_PATH . '/includes/db_connection.php';
 
 // Redirect if not logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
     header("Location: login.php");
+    exit();
+}
+
+// Check if customer account is approved
+if (!isset($_SESSION['admin_approved']) || !$_SESSION['admin_approved']) {
+    if (isset($_SESSION['email_verified']) && $_SESSION['email_verified'] && 
+        isset($_SESSION['registration_status']) && $_SESSION['registration_status'] == 'verified') {
+        header("Location: pending_approval.php");
+    } else {
+        header("Location: login.php");
+    }
     exit();
 }
 
@@ -28,29 +45,34 @@ if ($user['login_count'] <= 1) {
     $welcome_subtitle = "Here's your billing overview and quick actions";
 }
 
-// Get user statistics
-// Total pending bills
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0) as total_amount FROM bills WHERE user_id = ? AND status = 'pending'");
+// Get user statistics - USING INVOICES TABLE (not bills)
+// Total pending invoices
+$stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0) as total_amount 
+                       FROM invoices WHERE user_id = ? AND payment_status IN ('pending', 'due')");
 $stmt->execute([$user_id]);
 $pending_stats = $stmt->fetch();
 
-// Total paid bills
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(amount), 0) as paid_amount FROM bills WHERE user_id = ? AND status = 'paid'");
+// Total paid invoices
+$stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(amount), 0) as paid_amount 
+                       FROM invoices WHERE user_id = ? AND payment_status = 'paid'");
 $stmt->execute([$user_id]);
 $paid_stats = $stmt->fetch();
 
-// Recent bills (last 5)
-$stmt = $pdo->prepare("SELECT b.*, s.service_name FROM bills b 
-                      LEFT JOIN services s ON b.bill_type = s.service_type 
-                      WHERE b.user_id = ? 
-                      ORDER BY b.due_date ASC 
+// Recent invoices (last 5)
+$stmt = $pdo->prepare("SELECT i.*, s.name as service_name 
+                      FROM invoices i 
+                      LEFT JOIN services s ON i.service_id = s.id 
+                      WHERE i.user_id = ? 
+                      ORDER BY i.due_date ASC 
                       LIMIT 5");
 $stmt->execute([$user_id]);
-$recent_bills = $stmt->fetchAll();
+$recent_invoices = $stmt->fetchAll();
 
 // Recent payments (last 3)
-$stmt = $pdo->prepare("SELECT p.*, b.bill_type FROM payments p 
-                      JOIN bills b ON p.bill_id = b.id 
+$stmt = $pdo->prepare("SELECT p.*, i.invoice_number, s.name as service_name 
+                      FROM payments p 
+                      JOIN invoices i ON p.invoice_id = i.id 
+                      LEFT JOIN services s ON i.service_id = s.id 
                       WHERE p.user_id = ? 
                       ORDER BY p.payment_date DESC 
                       LIMIT 3");
@@ -325,6 +347,73 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             z-index: 1001; /* Higher than sidebar */
         }
         
+        /* Dashboard specific styles */
+        .dashboard-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+        
+        .dashboard-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .dashboard-card h3 {
+            font-size: 2rem;
+            margin: 0 0 0.5rem 0;
+            color: #075B5E;
+        }
+        
+        .dashboard-card p {
+            margin: 0;
+            color: #666;
+            font-size: 0.9rem;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .table th {
+            background: #f8f9fa;
+            padding: 0.8rem;
+            text-align: left;
+            font-weight: 600;
+            color: #075B5E;
+            border-bottom: 2px solid #e9ecef;
+        }
+        
+        .table td {
+            padding: 0.8rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        
         @media (max-width: 768px) {
             .profile-sidebar {
                 width: 100%;
@@ -342,6 +431,14 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 width: 26px;
                 height: 26px;
                 font-size: 0.85rem;
+            }
+            
+            .dashboard-cards {
+                grid-template-columns: 1fr 1fr;
+            }
+            
+            .container > div:last-child {
+                grid-template-columns: 1fr;
             }
         }
         
@@ -392,7 +489,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <div class="sidebar-stats">
             <div class="stat-item">
                 <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
-                <span class="stat-label">Pending Bills</span>
+                <span class="stat-label">Pending Invoices</span>
             </div>
             <div class="stat-item">
                 <span class="stat-value">₹<?php echo number_format($pending_stats['total_amount'] ?? 0, 0); ?></span>
@@ -424,7 +521,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             
             <a href="bills.php" class="sidebar-item">
                 <i data-lucide="file-text" class="sidebar-icon"></i>
-                My Bills
+                My Invoices
             </a>
             <a href="payment.php" class="sidebar-item">
                 <i data-lucide="credit-card" class="sidebar-icon"></i>
@@ -440,7 +537,14 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             <a href="notifications.php" class="sidebar-item">
                 <i data-lucide="bell" class="sidebar-icon"></i>
                 Notifications
-                <span class="notification-badge">3</span>
+                <?php 
+                // Get unread notification count
+                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE");
+                $stmt->execute([$user_id]);
+                $notification_count = $stmt->fetch()['count'];
+                if ($notification_count > 0): ?>
+                    <span class="notification-badge"><?php echo $notification_count; ?></span>
+                <?php endif; ?>
             </a>
             <a href="settings.php" class="sidebar-item">
                 <i data-lucide="settings" class="sidebar-icon"></i>
@@ -470,7 +574,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 <div class="logo">BillPay Pro</div>
                 <ul class="nav-links">
                     <li><a href="dashboard.php">Dashboard</a></li>
-                    <li><a href="bills.php">My Bills</a></li>
+                    <li><a href="bills.php">My Invoices</a></li>
                     <li><a href="payment_history.php">Payment History</a></li>
                     <li style="display: flex; align-items: center;">
                         <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
@@ -479,7 +583,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                                 <?php echo $first_letter; ?>
                             </div>
                             <div class="user-name-display">
-                                <span><?php echo $_SESSION['full_name']; ?></span>
+                                <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
                                 <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
                             </div>
                         </div>
@@ -498,7 +602,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             <?php if ($is_first_login): ?>
                 <div style="background: #FFE6E1; color: #075B5E; padding: 1rem; border-radius: 4px; margin-top: 1rem;">
                     <strong>First Time Here!</strong>
-                    <p class="mt-1" style="margin: 0;">Welcome to our platform! Get started by viewing your bills.</p>
+                    <p class="mt-1" style="margin: 0;">Welcome to our platform! Get started by viewing your invoices.</p>
                 </div>
             <?php endif; ?>
         </div>
@@ -506,7 +610,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <!-- Payment Alert -->
         <?php if ($pending_stats['total_pending'] > 0): ?>
         <div class="alert alert-success">
-            <strong>Action Required:</strong> You have <?php echo $pending_stats['total_pending']; ?> pending bill(s) totaling ₹<?php echo number_format($pending_stats['total_amount'], 2); ?>
+            <strong>Action Required:</strong> You have <?php echo $pending_stats['total_pending']; ?> pending invoice(s) totaling ₹<?php echo number_format($pending_stats['total_amount'], 2); ?>
             <a href="payment.php" class="btn" style="margin-left: 1rem;">Pay Now</a>
         </div>
         <?php endif; ?>
@@ -515,7 +619,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <div class="dashboard-cards">
             <div class="dashboard-card">
                 <h3><?php echo $pending_stats['total_pending']; ?></h3>
-                <p>Pending Bills</p>
+                <p>Pending Invoices</p>
             </div>
             <div class="dashboard-card">
                 <h3>₹<?php echo number_format($pending_stats['total_amount'], 2); ?></h3>
@@ -523,7 +627,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             </div>
             <div class="dashboard-card">
                 <h3><?php echo $paid_stats['total_paid']; ?></h3>
-                <p>Paid Bills</p>
+                <p>Paid Invoices</p>
             </div>
             <div class="dashboard-card">
                 <h3>₹<?php echo number_format($paid_stats['paid_amount'], 2); ?></h3>
@@ -534,12 +638,12 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <!-- Quick Actions -->
         <div class="dashboard-cards">
             <a href="bills.php" class="dashboard-card" style="text-decoration: none; color: inherit; display: block;">
-                <h3 style="color: #075B5E;">View Bills</h3>
-                <p>Check all your bills</p>
+                <h3 style="color: #075B5E;">View Invoices</h3>
+                <p>Check all your invoices</p>
             </a>
             <a href="payment.php" class="dashboard-card" style="text-decoration: none; color: inherit; display: block;">
                 <h3 style="color: #075B5E;">Make Payment</h3>
-                <p>Pay pending bills</p>
+                <p>Pay pending invoices</p>
             </a>
             <a href="payment_history.php" class="dashboard-card" style="text-decoration: none; color: inherit; display: block;">
                 <h3 style="color: #075B5E;">Payment History</h3>
@@ -549,10 +653,10 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
 
         <!-- Recent Activity -->
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 2rem;">
-            <!-- Recent Bills -->
+            <!-- Recent Invoices -->
             <div class="card">
-                <h2 style="color: #075B5E; margin-bottom: 1rem;">Recent Bills</h2>
-                <?php if (count($recent_bills) > 0): ?>
+                <h2 style="color: #075B5E; margin-bottom: 1rem;">Recent Invoices</h2>
+                <?php if (count($recent_invoices) > 0): ?>
                     <table class="table">
                         <thead>
                             <tr>
@@ -563,13 +667,13 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($recent_bills as $bill): ?>
+                            <?php foreach ($recent_invoices as $invoice): ?>
                                 <tr>
-                                    <td><?php echo $bill['service_name'] ?? ucfirst($bill['bill_type']); ?></td>
-                                    <td>₹<?php echo number_format($bill['amount'], 2); ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($bill['due_date'])); ?></td>
+                                    <td><?php echo $invoice['service_name'] ?? 'General Service'; ?></td>
+                                    <td>₹<?php echo number_format($invoice['amount'], 2); ?></td>
+                                    <td><?php echo date('M d, Y', strtotime($invoice['due_date'])); ?></td>
                                     <td>
-                                        <?php if ($bill['status'] == 'pending'): ?>
+                                        <?php if ($invoice['payment_status'] == 'pending' || $invoice['payment_status'] == 'due'): ?>
                                             <span class="status-pending">Pending</span>
                                         <?php else: ?>
                                             <span class="status-completed">Paid</span>
@@ -580,10 +684,10 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                         </tbody>
                     </table>
                     <div class="text-center mt-2">
-                        <a href="bills.php" class="btn">View All Bills</a>
+                        <a href="bills.php" class="btn">View All Invoices</a>
                     </div>
                 <?php else: ?>
-                    <p>No bills found.</p>
+                    <p>No invoices found.</p>
                 <?php endif; ?>
             </div>
 
@@ -603,7 +707,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                             <?php foreach ($recent_payments as $payment): ?>
                                 <tr>
                                     <td><?php echo date('M d, Y', strtotime($payment['payment_date'])); ?></td>
-                                    <td><?php echo ucfirst($payment['bill_type']); ?></td>
+                                    <td><?php echo $payment['service_name'] ?? 'General Service'; ?></td>
                                     <td>₹<?php echo number_format($payment['payment_amount'], 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
@@ -615,6 +719,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 <?php else: ?>
                     <p>No payments yet.</p>
                 <?php endif; ?>
+            </div>
         </div>
     </div>
 

@@ -1,129 +1,118 @@
 <?php
 session_start();
-include '../includes/config.php';
+require_once '../includes/config.php';
+require_once '../includes/db_connection.php';
 
-// Redirect if not logged in as admin
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_admin']) || !$_SESSION['is_admin']) {
-    header("Location: login.php");
-    exit();
+// Redirect if not admin
+if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
+    header("Location: ../customer/login.php");
+    exit;
 }
-
-// Function to highlight search terms
-function highlightText($text, $search_term) {
-    if (empty($search_term) || empty(trim($search_term))) return $text;
-    $pattern = '/(' . preg_quote(trim($search_term), '/') . ')/i';
-    return preg_replace($pattern, '<span class="highlight">$1</span>', $text);
-}
-
-$message = '';
-$message_type = '';
 
 // Handle search
-$search_term = '';
-$customers = [];
+$search = $_GET['search'] ?? '';
+$status_filter = $_GET['status'] ?? 'all';
 
-if (isset($_GET['search'])) {
-    $search_term = trim($_GET['search']);
-    if (!empty($search_term)) {
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE is_admin = FALSE AND 
-                              (full_name LIKE ? OR email LIKE ? OR phone LIKE ? OR customer_code LIKE ?) 
-                              ORDER BY created_at DESC");
-        $search_like = "%$search_term%";
-        $stmt->execute([$search_like, $search_like, $search_like, $search_like]);
-        $customers = $stmt->fetchAll();
-    } else {
-        // If search is empty, show all customers
-        $stmt = $pdo->query("SELECT * FROM users WHERE is_admin = FALSE ORDER BY created_at DESC");
-        $customers = $stmt->fetchAll();
-    }
-} else {
-    // Default: show all customers
-    $stmt = $pdo->query("SELECT * FROM users WHERE is_admin = FALSE ORDER BY created_at DESC");
-    $customers = $stmt->fetchAll();
+// Base query
+$query = "SELECT * FROM users WHERE is_admin = FALSE";
+$params = [];
+
+// Apply search filter
+if (!empty($search)) {
+    $query .= " AND (full_name LIKE ? OR email LIKE ? OR phone LIKE ?)";
+    $search_term = "%$search%";
+    $params = [$search_term, $search_term, $search_term];
 }
 
-// Handle form submissions
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    if (isset($_POST['add_customer'])) {
-        // Add new customer
-        $full_name = trim($_POST['full_name']);
-        $email = trim($_POST['email']);
-        $phone = trim($_POST['phone']);
-        $address = trim($_POST['address']);
+// Apply status filter
+if ($status_filter === 'pending') {
+    $query .= " AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'";
+} elseif ($status_filter === 'approved') {
+    $query .= " AND admin_approved = 1";
+} elseif ($status_filter === 'rejected') {
+    $query .= " AND registration_status = 'rejected'";
+} elseif ($status_filter === 'unverified') {
+    $query .= " AND (email_verified = 0 OR registration_status = 'pending')";
+}
+
+$query .= " ORDER BY created_at DESC";
+
+// Get users
+$stmt = $pdo->prepare($query);
+$stmt->execute($params);
+$users = $stmt->fetchAll();
+
+// Handle user actions
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['approve_user'])) {
+        $user_id = $_POST['user_id'];
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
+        $stmt->execute([$user_id]);
         
-        // Validate inputs
-        if (empty($full_name) || empty($email) || empty($phone)) {
-            $message = "Please fill all required fields";
-            $message_type = "error";
-        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $message = "Please enter a valid email address";
-            $message_type = "error";
-        } elseif (!preg_match('/^[0-9]{10}$/', $phone)) {
-            $message = "Please enter a valid 10-digit phone number";
-            $message_type = "error";
+        // Create notification for user
+        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Approved', 'Your account has been approved by the administrator. You can now access all features.', 'account', NOW())");
+        $stmt->execute([$user_id]);
+        
+        $_SESSION['success_message'] = "User approved successfully!";
+        header("Location: manage_users.php");
+        exit;
+    }
+    
+    if (isset($_POST['reject_user'])) {
+        $user_id = $_POST['user_id'];
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', updated_at = NOW() WHERE id = ?");
+        $stmt->execute([$user_id]);
+        
+        // Create notification for user
+        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Rejected', 'Your account registration has been rejected by the administrator. Please contact support for more information.', 'account', NOW())");
+        $stmt->execute([$user_id]);
+        
+        $_SESSION['success_message'] = "User rejected successfully!";
+        header("Location: manage_users.php");
+        exit;
+    }
+    
+    if (isset($_POST['delete_user'])) {
+        $user_id = $_POST['user_id'];
+        
+        // Check if user has any invoices before deleting
+        $stmt = $pdo->prepare("SELECT COUNT(*) as invoice_count FROM invoices WHERE user_id = ?");
+        $stmt->execute([$user_id]);
+        $invoice_count = $stmt->fetch()['invoice_count'];
+        
+        if ($invoice_count > 0) {
+            $_SESSION['error_message'] = "Cannot delete user with existing invoices. Please delete the invoices first or mark the user as inactive.";
         } else {
-            // Check if phone or email already exists
-            $stmt = $pdo->prepare("SELECT id FROM users WHERE phone = ? OR email = ?");
-            $stmt->execute([$phone, $email]);
-            
-            if ($stmt->rowCount() > 0) {
-                $message = "Phone number or email already exists";
-                $message_type = "error";
-            } else {
-                // Generate unique customer code - FIXED FORMAT
-                $customer_code = 'CUST' . date('YmdHis') . rand(100, 999);
-                
-                // Generate temporary password
-                $temp_password = 'password123'; // Simple password for testing
-                $hashed_password = password_hash($temp_password, PASSWORD_DEFAULT);
-                
-                // Insert customer with ALL required fields
-                try {
-                    $sql = "INSERT INTO users (email, password, full_name, phone, address, customer_code, is_admin, admin_approved, phone_verified, is_active, created_at) 
-                            VALUES (?, ?, ?, ?, ?, ?, 0, 1, 0, 1, NOW())";
-                    
-                    $stmt = $pdo->prepare($sql);
-                    $result = $stmt->execute([$email, $hashed_password, $full_name, $phone, $address, $customer_code]);
-                    
-                    if ($result) {
-                        $new_customer_id = $pdo->lastInsertId();
-                        $message = "Customer added successfully!<br>
-                                   <strong>Customer Code:</strong> <code style='background: #f8f9fa; padding: 5px; border-radius: 3px;'>$customer_code</code><br>
-                                   <strong>Temporary Password:</strong> $temp_password<br>
-                                   <small>Provide this code to the customer for registration</small>";
-                        $message_type = "success";
-                        
-                        // Store the new customer ID to highlight it
-                        $_SESSION['new_customer_id'] = $new_customer_id;
-                        
-                        // Force refresh to show new customer
-                        header("Location: manage_users.php?success=1&code=" . urlencode($customer_code));
-                        exit();
-                    } else {
-                        $message = "Error adding customer to database";
-                        $message_type = "error";
-                    }
-                } catch (Exception $e) {
-                    $message = "Database error: " . $e->getMessage();
-                    $message_type = "error";
-                }
-            }
+            $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+            $stmt->execute([$user_id]);
+            $_SESSION['success_message'] = "User deleted successfully!";
         }
+        header("Location: manage_users.php");
+        exit;
+    }
+    
+    if (isset($_POST['resend_verification'])) {
+        $user_id = $_POST['user_id'];
+        
+        // Generate new OTP
+        $otp = rand(100000, 999999);
+        $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+        
+        $stmt = $pdo->prepare("UPDATE users SET otp = ?, otp_expiry = ?, email_verified = 0, registration_status = 'pending' WHERE id = ?");
+        $stmt->execute([$otp, $otp_expiry, $user_id]);
+        
+        // Get user email
+        $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch();
+        
+        // Send email with OTP (you'll need to implement email sending)
+        // For now, we'll just log it
+        $_SESSION['success_message'] = "Verification OTP resent to user. OTP: $otp (This expires at $otp_expiry)";
+        header("Location: manage_users.php");
+        exit;
     }
 }
-
-// Check for success message from redirect
-if (isset($_GET['success']) && $_GET['success'] == '1') {
-    $message = "Customer added successfully!";
-    if (isset($_GET['code'])) {
-        $message .= "<br><strong>Customer Code:</strong> <code style='background: #f8f9fa; padding: 5px; border-radius: 3px;'>" . htmlspecialchars($_GET['code']) . "</code>";
-    }
-    $message_type = "success";
-}
-
-// Get new customer ID from session
-$new_customer_id = isset($_SESSION['new_customer_id']) ? $_SESSION['new_customer_id'] : null;
-unset($_SESSION['new_customer_id']);
 ?>
 
 <!DOCTYPE html>
@@ -131,415 +120,531 @@ unset($_SESSION['new_customer_id']);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manage Users - BillPay Pro</title>
-    <link rel="stylesheet" href="../css/style.css">
-    <!-- Lucide Icons CDN -->
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <title>Manage Users - Online Service Billing System</title>
+    <link rel="stylesheet" href="../assets/css/style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        .user-management {
-            display: grid;
-            grid-template-columns: 1fr 2fr;
-            gap: 2rem;
-            margin-top: 2rem;
+        .manage-container {
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
         }
         
-        .user-card.new-customer {
-            border-left-color: #2ecc71;
-            animation: pulse 2s infinite;
-            background: #f8fff9;
+        .header-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #f0f0f0;
         }
         
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.4); }
-            70% { box-shadow: 0 0 0 10px rgba(46, 204, 113, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
+        .header-section h1 {
+            margin: 0;
+            color: #075B5E;
         }
         
-        .new-badge {
-            background: #2ecc71;
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #6c757d;
             color: white;
-            padding: 0.3rem 0.8rem;
-            border-radius: 15px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-left: 10px;
-            display: flex;
-            align-items: center;
-            gap: 0.3rem;
-        }
-        
-        .customer-code-display {
-            background: #3498db;
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-family: monospace;
-            font-size: 0.9rem;
-            display: inline-block;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .search-container {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-            align-items: center;
-        }
-        
-        .search-form {
-            display: flex;
-            flex: 1;
-            gap: 0.5rem;
-        }
-        
-        .search-input {
-            flex: 1;
-        }
-        
-        .search-results {
-            background: #f8f9fa;
-            padding: 0.5rem 1rem;
+            text-decoration: none;
             border-radius: 5px;
-            margin-bottom: 1rem;
-            font-size: 0.9rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
         }
         
-        .no-results {
-            text-align: center;
-            padding: 2rem;
-            color: #666;
+        .back-btn:hover {
+            background: #5a6268;
         }
         
-        .highlight {
-            background-color: #fff3cd;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-weight: bold;
+        .filters-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
         }
         
-        .user-grid {
+        .filter-form {
             display: grid;
-            gap: 1.5rem;
+            grid-template-columns: 1fr auto auto;
+            gap: 15px;
+            align-items: end;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .form-group label {
+            font-weight: 500;
+            color: #075B5E;
+        }
+        
+        .form-control {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 1rem;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #075B5E;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 500;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .btn:hover {
+            background: #0a7c80;
+        }
+        
+        .btn-success {
+            background: #28a745;
+        }
+        
+        .btn-success:hover {
+            background: #218838;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .btn-warning {
+            background: #ffc107;
+            color: #212529;
+        }
+        
+        .btn-warning:hover {
+            background: #e0a800;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .btn-info {
+            background: #17a2b8;
+        }
+        
+        .btn-info:hover {
+            background: #138496;
+        }
+        
+        .users-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
         }
         
         .user-card {
             background: white;
-            border-radius: 8px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            border-left: 4px solid #3498db;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+            transition: transform 0.2s;
         }
         
-        .section-header {
+        .user-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        
+        .user-header {
+            background: #075B5E;
+            color: white;
+            padding: 20px;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            margin-bottom: 1rem;
+            gap: 15px;
         }
         
-        .section-icon {
-            width: 2rem;
-            height: 2rem;
-            color: #3498db;
+        .user-avatar {
+            width: 60px;
+            height: 60px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: bold;
         }
         
-        .form-icon {
-            width: 1rem;
-            height: 1rem;
-            margin-right: 0.5rem;
-            vertical-align: middle;
+        .user-info {
+            flex: 1;
         }
         
-        .btn-icon {
-            width: 1.2rem;
-            height: 1.2rem;
+        .user-name {
+            margin: 0;
+            font-size: 1.2rem;
         }
         
-        .empty-state-icon {
-            width: 4rem;
-            height: 4rem;
-            color: #6c757d;
-            margin: 0 auto 1rem auto;
-            display: block;
+        .user-email {
+            margin: 5px 0 0;
+            opacity: 0.9;
+            font-size: 0.9rem;
+        }
+        
+        .user-body {
+            padding: 20px;
+        }
+        
+        .user-details p {
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .user-details strong {
+            color: #075B5E;
+            min-width: 140px;
         }
         
         .status-icon {
             width: 1rem;
             height: 1rem;
-            margin-right: 0.3rem;
-            vertical-align: middle;
+        }
+        
+        .user-actions {
+            padding: 20px;
+            border-top: 1px solid #f0f0f0;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .no-results {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 40px 20px;
+            color: #666;
+        }
+        
+        .status-badge {
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-approved {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-rejected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-unverified {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+        
+        .status-verified {
+            background: #cce5ff;
+            color: #004085;
+        }
+        
+        .message {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .success-message {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .info-message {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .otp-info {
+            background: #f8f9fa;
+            border-left: 4px solid #075B5E;
+            padding: 10px 15px;
+            margin: 10px 0;
+            font-size: 0.9rem;
+        }
+        
+        .otp-info strong {
+            color: #075B5E;
         }
     </style>
 </head>
 <body>
-    <header class="header">
-        <div class="container">
-            <nav class="navbar">
-                <div class="logo">BillPay Pro</div>
-                <ul class="nav-links">
-                    <li><a href="index.php">Dashboard</a></li>
-                    <li><a href="manage_services.php">Manage Services</a></li>
-                    <li><a href="manage_bills.php">Manage Bills</a></li>
-                    <li><a href="manage_users.php" style="color: #3498db;">Manage Users</a></li>
-                    <li><a href="reports.php">Reports</a></li>
-                    <li style="display: flex; align-items: center;">
-                        <div class="user-avatar" style="background: #e74c3c;">
-                            <?php 
-                            $names = explode(' ', $_SESSION['full_name']);
-                            $initials = '';
-                            foreach ($names as $n) {
-                                $initials .= strtoupper(substr($n, 0, 1));
-                            }
-                            echo substr($initials, 0, 2);
-                            ?>
-                        </div>
-                        <span><?php echo $_SESSION['full_name']; ?></span>
-                        <span class="admin-badge">ADMIN</span>
-                        <a href="logout.php" style="margin-left: 15px; color: white;">Logout</a>
-                    </li>
-                </ul>
-            </nav>
-        </div>
-    </header>
-
-    <div class="container">
-        <div class="section-header">
-            <i data-lucide="users" class="section-icon"></i>
+    <?php include '../includes/header.php'; ?>
+    
+    <div class="manage-container">
+        <div class="header-section">
             <h1>Manage Users</h1>
+            <a href="index.php" class="back-btn">
+                <i data-lucide="arrow-left"></i> Back to Dashboard
+            </a>
         </div>
         
-        <?php if ($message): ?>
-            <div class="<?php echo $message_type == 'success' ? 'alert alert-success' : 'alert alert-danger'; ?>">
-                <?php if ($message_type == 'success'): ?>
-                    <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                <?php else: ?>
-                    <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                <?php endif; ?>
-                <?php echo $message; ?>
+        <!-- Display messages -->
+        <?php if (isset($_SESSION['success_message'])): ?>
+            <div class="message success-message">
+                <?php echo $_SESSION['success_message']; unset($_SESSION['success_message']); ?>
             </div>
         <?php endif; ?>
-
-        <div class="user-management">
-            <!-- Add Customer Form -->
-            <div class="card">
-                <div class="section-header">
-                    <i data-lucide="user-plus" style="width: 1.5rem; height: 1.5rem;"></i>
-                    <h2>Add New Customer</h2>
-                </div>
-                <form method="POST" action="" class="add-customer-form" id="addCustomerForm">
-                    <div class="form-group">
-                        <label for="full_name">
-                            <i data-lucide="user" class="form-icon"></i>
-                            Full Name *
-                        </label>
-                        <input type="text" id="full_name" name="full_name" class="form-control" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="email">
-                            <i data-lucide="mail" class="form-icon"></i>
-                            Email *
-                        </label>
-                        <input type="email" id="email" name="email" class="form-control" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="phone">
-                            <i data-lucide="phone" class="form-icon"></i>
-                            Phone Number *
-                        </label>
-                        <input type="tel" id="phone" name="phone" class="form-control" 
-                               pattern="[0-9]{10}" placeholder="98XXXXXXXX" required>
-                        <small style="color: #666;">10-digit phone number</small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="address">
-                            <i data-lucide="map-pin" class="form-icon"></i>
-                            Address
-                        </label>
-                        <textarea id="address" name="address" class="form-control" rows="3"></textarea>
-                    </div>
-                    
-                    <button type="submit" name="add_customer" class="btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
-                        <i data-lucide="user-plus" class="btn-icon"></i>
-                        Add Customer
-                    </button>
-                    
-                    <div style="margin-top: 1rem; padding: 1rem; background: #e8f4fd; border-radius: 5px; display: flex; align-items: center; gap: 0.5rem;">
-                        <i data-lucide="info" style="width: 1rem; height: 1rem;"></i>
-                        <small><strong>Note:</strong> Customer will receive a unique code and temporary password for registration.</small>
-                    </div>
-                </form>
+        
+        <?php if (isset($_SESSION['error_message'])): ?>
+            <div class="message error-message">
+                <?php echo $_SESSION['error_message']; unset($_SESSION['error_message']); ?>
             </div>
-
-            <!-- Customers List -->
-            <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <div class="section-header">
-                        <i data-lucide="list" style="width: 1.5rem; height: 1.5rem;"></i>
-                        <h2>All Customers (<?php echo count($customers); ?>)</h2>
-                    </div>
+        <?php endif; ?>
+        
+        <!-- Filters -->
+        <div class="filters-section">
+            <form method="GET" class="filter-form">
+                <div class="form-group">
+                    <label for="search">Search Users</label>
+                    <input type="text" id="search" name="search" class="form-control" placeholder="Search by name, email, or phone..." value="<?php echo htmlspecialchars($search); ?>">
                 </div>
                 
-                <!-- Search Form -->
-                <div class="search-container">
-                    <form method="GET" action="" class="search-form">
-                        <div style="position: relative; flex: 1;">
-                            <i data-lucide="search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 1.2rem; height: 1.2rem; color: #666;"></i>
-                            <input type="text" name="search" class="form-control search-input" style="padding-left: 40px;"
-                                   placeholder="Search by name, email, phone, or customer code..." 
-                                   value="<?php echo htmlspecialchars($search_term); ?>">
-                        </div>
-                        <button type="submit" class="btn" style="display: flex; align-items: center; gap: 0.5rem;">
-                            <i data-lucide="search" class="btn-icon"></i>
-                            Search
-                        </button>
-                    </form>
-                    <?php if (!empty($search_term)): ?>
-                        <a href="manage_users.php" class="btn" style="background: #95a5a6; display: flex; align-items: center; gap: 0.5rem;">
-                            <i data-lucide="x" class="btn-icon"></i>
-                            Clear
-                        </a>
-                    <?php endif; ?>
+                <div class="form-group">
+                    <label for="status">Status Filter</label>
+                    <select id="status" name="status" class="form-control">
+                        <option value="all" <?php echo $status_filter === 'all' ? 'selected' : ''; ?>>All Users</option>
+                        <option value="pending" <?php echo $status_filter === 'pending' ? 'selected' : ''; ?>>Pending Approval</option>
+                        <option value="approved" <?php echo $status_filter === 'approved' ? 'selected' : ''; ?>>Approved</option>
+                        <option value="rejected" <?php echo $status_filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
+                        <option value="unverified" <?php echo $status_filter === 'unverified' ? 'selected' : ''; ?>>Unverified</option>
+                        <option value="verified" <?php echo $status_filter === 'verified' ? 'selected' : ''; ?>>Verified (Pending Admin)</option>
+                    </select>
                 </div>
                 
-                <?php if (!empty($search_term)): ?>
-                    <div class="search-results">
-                        <i data-lucide="filter" style="width: 1.2rem; height: 1.2rem;"></i>
-                        <strong>Search Results for:</strong> "<?php echo htmlspecialchars($search_term); ?>"
-                        <span style="color: #666; margin-left: 1rem;">
-                            Found <?php echo count($customers); ?> customer(s)
-                        </span>
-                    </div>
-                <?php endif; ?>
-                
-                <?php if (count($customers) > 0): ?>
-                    <div class="user-grid" id="customersList">
-                        <?php foreach ($customers as $customer): 
-                            $is_new = ($customer['id'] == $new_customer_id);
-                        ?>
-                            <div class="user-card <?php echo $is_new ? 'new-customer' : ''; ?>" id="customer-<?php echo $customer['id']; ?>">
-                                
-                                <div class="customer-code-display">
-                                    <i data-lucide="id-card" style="width: 1.2rem; height: 1.2rem;"></i>
-                                    <?php echo highlightText($customer['customer_code'], $search_term); ?>
-                                    <?php if ($is_new): ?>
-                                        <span class="new-badge">
-                                            <i data-lucide="sparkles" style="width: 1rem; height: 1rem;"></i>
-                                            NEW
-                                        </span>
-                                    <?php endif; ?>
-                                </div>
-                                
-                                <div style="display: flex; justify-content: space-between; align-items: start;">
-                                    <div style="flex: 1;">
-                                        <h3>
-                                            <?php echo highlightText($customer['full_name'], $search_term); ?>
-                                        </h3>
-                                        <p>
-                                            <i data-lucide="mail" class="status-icon"></i>
-                                            <strong>Email:</strong> 
-                                            <?php echo highlightText($customer['email'], $search_term); ?>
-                                        </p>
-                                        <p>
-                                            <i data-lucide="phone" class="status-icon"></i>
-                                            <strong>Phone:</strong> 
-                                            <?php echo highlightText($customer['phone'], $search_term); ?>
-                                        </p>
-                                        <p>
-                                            <i data-lucide="user-check" class="status-icon"></i>
-                                            <strong>Status:</strong> 
-                                            <?php if ($customer['phone_verified']): ?>
-                                                <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                                <span style="color: #27ae60;">Registered</span>
-                                            <?php else: ?>
-                                                <i data-lucide="x-circle" style="width: 1rem; height: 1rem; color: #e74c3c; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                                <span style="color: #e74c3c;">Not Registered</span>
-                                            <?php endif; ?>
-                                        </p>
-                                        <p>
-                                            <i data-lucide="key" class="status-icon"></i>
-                                            <strong>Customer Code:</strong> 
-                                            <code><?php echo highlightText($customer['customer_code'], $search_term); ?></code>
-                                        </p>
-                                        <p>
-                                            <i data-lucide="calendar" class="status-icon"></i>
-                                            <strong>Registered:</strong> 
-                                            <?php echo date('M d, Y', strtotime($customer['created_at'])); ?>
-                                        </p>
-                                    </div>
-                                </div>
-                                
-                                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee;">
-                                    <strong>Registration Instructions:</strong><br>
-                                    <small>Give this code to customer: <code style="background: #f8f9fa; padding: 2px 5px; border-radius: 3px;"><?php echo $customer['customer_code']; ?></code></small>
-                                    <br>
-                                    <small>Customer should go to: <strong>Customer Registration</strong> page</small>
-                                </div>
+                <button type="submit" class="btn">
+                    <i data-lucide="search"></i> Search
+                </button>
+            </form>
+        </div>
+        
+        <!-- Users List -->
+        <div class="users-grid">
+            <?php if (empty($users)): ?>
+                <div class="no-results">
+                    <i data-lucide="users" style="width: 64px; height: 64px; opacity: 0.5; margin-bottom: 20px;"></i>
+                    <h3>No users found</h3>
+                    <p>Try adjusting your search criteria</p>
+                </div>
+            <?php else: ?>
+                <?php foreach ($users as $customer): ?>
+                    <div class="user-card">
+                        <div class="user-header">
+                            <div class="user-avatar">
+                                <?php 
+                                $name_parts = explode(' ', $customer['full_name']);
+                                $initials = '';
+                                foreach ($name_parts as $part) {
+                                    if (!empty($part)) {
+                                        $initials .= strtoupper(substr($part, 0, 1));
+                                    }
+                                }
+                                echo substr($initials, 0, 2);
+                                ?>
                             </div>
-                        <?php endforeach; ?>
+                            <div class="user-info">
+                                <h3 class="user-name"><?php echo htmlspecialchars($customer['full_name']); ?></h3>
+                                <p class="user-email"><?php echo htmlspecialchars($customer['email']); ?></p>
+                            </div>
+                        </div>
+                        
+                        <div class="user-body">
+                            <div class="user-details">
+                                <p>
+                                    <i data-lucide="phone" class="status-icon"></i>
+                                    <strong>Phone:</strong> <?php echo htmlspecialchars($customer['phone'] ?? 'Not provided'); ?>
+                                    <?php if ($customer['phone_verified']): ?>
+                                        <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                    <?php endif; ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="home" class="status-icon"></i>
+                                    <strong>Address:</strong> <?php echo htmlspecialchars($customer['address'] ?? 'Not provided'); ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="calendar" class="status-icon"></i>
+                                    <strong>Registered:</strong> <?php echo date('M d, Y', strtotime($customer['created_at'])); ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="user-check" class="status-icon"></i>
+                                    <strong>Approval Status:</strong> 
+                                    <?php if ($customer['admin_approved']): ?>
+                                        <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                        <span style="color: #27ae60;">Approved</span>
+                                    <?php elseif ($customer['email_verified'] && $customer['registration_status'] == 'verified'): ?>
+                                        <i data-lucide="clock" style="width: 1rem; height: 1rem; color: #f39c12; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                        <span style="color: #f39c12;">Pending Approval</span>
+                                    <?php elseif ($customer['registration_status'] == 'rejected'): ?>
+                                        <i data-lucide="x-circle" style="width: 1rem; height: 1rem; color: #e74c3c; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                        <span style="color: #e74c3c;">Rejected</span>
+                                    <?php else: ?>
+                                        <i data-lucide="alert-circle" style="width: 1rem; height: 1rem; color: #e74c3c; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                        <span style="color: #e74c3c;">Not Verified</span>
+                                    <?php endif; ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="mail-check" class="status-icon"></i>
+                                    <strong>Email Status:</strong> 
+                                    <?php if ($customer['email_verified']): ?>
+                                        <span class="status-badge status-approved">Verified</span>
+                                    <?php else: ?>
+                                        <span class="status-badge status-unverified">Not Verified</span>
+                                    <?php endif; ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="shield-check" class="status-icon"></i>
+                                    <strong>Registration Status:</strong> 
+                                    <?php 
+                                    $status_class = '';
+                                    $status_text = ucfirst($customer['registration_status']);
+                                    switch ($customer['registration_status']) {
+                                        case 'approved':
+                                            $status_class = 'status-approved';
+                                            break;
+                                        case 'verified':
+                                            $status_class = 'status-verified';
+                                            break;
+                                        case 'rejected':
+                                            $status_class = 'status-rejected';
+                                            break;
+                                        default:
+                                            $status_class = 'status-pending';
+                                            $status_text = 'Pending';
+                                    }
+                                    ?>
+                                    <span class="status-badge <?php echo $status_class; ?>"><?php echo $status_text; ?></span>
+                                </p>
+                                
+                                <!-- Show OTP info if available -->
+                                <?php if (!empty($customer['otp']) && $customer['otp_expiry'] > date('Y-m-d H:i:s')): ?>
+                                    <div class="otp-info">
+                                        <p><strong>Active OTP:</strong> <?php echo $customer['otp']; ?></p>
+                                        <p><strong>Expires:</strong> <?php echo date('h:i A', strtotime($customer['otp_expiry'])); ?></p>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        
+                        <div class="user-actions">
+                            <?php if ($customer['email_verified'] && $customer['registration_status'] == 'verified' && !$customer['admin_approved']): ?>
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
+                                    <button type="submit" name="approve_user" class="btn btn-success">
+                                        <i data-lucide="check"></i> Approve
+                                    </button>
+                                </form>
+                                
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
+                                    <button type="submit" name="reject_user" class="btn btn-danger">
+                                        <i data-lucide="x"></i> Reject
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            
+                            <?php if (!$customer['email_verified'] && $customer['registration_status'] == 'pending'): ?>
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
+                                    <button type="submit" name="resend_verification" class="btn btn-info">
+                                        <i data-lucide="mail"></i> Resend Verification
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            
+                            <?php if ($customer['admin_approved']): ?>
+                                <a href="view_invoices.php?user_id=<?php echo $customer['id']; ?>" class="btn btn-secondary">
+                                    <i data-lucide="file-text"></i> View Invoices
+                                </a>
+                            <?php endif; ?>
+                            
+                            <?php if (!$customer['admin_approved'] && $customer['registration_status'] != 'rejected'): ?>
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
+                                    <button type="submit" name="delete_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this user? This action cannot be undone.')">
+                                        <i data-lucide="trash-2"></i> Delete
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                        </div>
                     </div>
-                <?php else: ?>
-                    <div class="no-results">
-                        <i data-lucide="users" class="empty-state-icon"></i>
-                        <h3>No Customers Found</h3>
-                        <?php if (!empty($search_term)): ?>
-                            <p>No customers found matching your search criteria.</p>
-                            <p>Try different search terms or <a href="manage_users.php">view all customers</a>.</p>
-                        <?php else: ?>
-                            <p>No customers have been added yet.</p>
-                            <p>Add your first customer using the form on the left.</p>
-                        <?php endif; ?>
-                    </div>
-                <?php endif; ?>
-            </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
         </div>
     </div>
-
-    <footer class="footer">
-        <div class="container">
-            <p>&copy; <?php echo date('Y'); ?> Online Billing System - BCA Project | Tribhuvan University</p>
-        </div>
-    </footer>
-
+    
+    <?php include '../includes/footer.php'; ?>
+    
     <script>
-        // Auto-scroll to new customer
-        document.addEventListener('DOMContentLoaded', function() {
-            const newCustomer = document.querySelector('.new-customer');
-            if (newCustomer) {
-                setTimeout(() => {
-                    newCustomer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }, 500);
-            }
-            
-            // Focus on search input if there's a search term
-            const searchInput = document.querySelector('input[name="search"]');
-            if (searchInput && searchInput.value) {
-                searchInput.focus();
-                searchInput.select();
-            }
-            
-            // Initialize Lucide Icons
-            lucide.createIcons();
+        // Initialize Lucide icons
+        lucide.createIcons();
+        
+        // Confirm before deleting user
+        const deleteForms = document.querySelectorAll('form[action*="delete_user"]');
+        deleteForms.forEach(form => {
+            form.addEventListener('submit', function(e) {
+                if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
+                    e.preventDefault();
+                }
+            });
         });
         
-        // Quick search functionality with Enter key
-        document.addEventListener('DOMContentLoaded', function() {
-            const searchInput = document.querySelector('input[name="search"]');
-            if (searchInput) {
-                searchInput.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        this.form.submit();
-                    }
-                });
-            }
+        // Confirm before resending verification
+        const resendForms = document.querySelectorAll('form[action*="resend_verification"]');
+        resendForms.forEach(form => {
+            form.addEventListener('submit', function(e) {
+                if (!confirm('Are you sure you want to resend verification email to this user?')) {
+                    e.preventDefault();
+                }
+            });
         });
     </script>
 </body>

@@ -1,66 +1,76 @@
 <?php
 session_start();
-include '../includes/config.php';
+require_once '../includes/config.php';
+require_once '../includes/db_connection.php';
 
-// If already logged in as customer, redirect to dashboard
-if (isset($_SESSION['user_id']) && (!isset($_SESSION['is_admin']) || !$_SESSION['is_admin'])) {
-    header("Location: dashboard.php");
+// If already logged in, redirect to appropriate dashboard
+if (isset($_SESSION['user_id'])) {
+    if ($_SESSION['is_admin']) {
+        header("Location: ../admin/index.php");
+    } else {
+        header("Location: dashboard.php");
+    }
     exit();
-}
-
-// If admin is logged in, show message
-if (isset($_SESSION['user_id']) && isset($_SESSION['is_admin']) && $_SESSION['is_admin']) {
-    $error = 'You are logged in as Admin. Please <a href="../admin/logout.php">logout</a> first to access customer login.';
 }
 
 $error = '';
 
-// Check for registration success message
-if (isset($_SESSION['registration_success'])) {
-    $success = $_SESSION['registration_success'];
-    unset($_SESSION['registration_success']);
-}
-
+// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $email = trim($_POST['email']); // Changed from phone to email
+    $email = trim($_POST['email']);
     $password = $_POST['password'];
     
+    // Validate inputs
     if (empty($email) || empty($password)) {
-        $error = 'Please enter both email and password';
+        $error = "Please enter both email and password.";
     } else {
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND is_admin = FALSE");
+        // Check user credentials
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
         $stmt->execute([$email]);
         $user = $stmt->fetch();
         
-        if ($user && password_verify($password, $user['password'])) {
-            // Check if email is verified
-            if (!$user['email_verified']) {
-                $error = 'Please verify your email address first';
-            }
-            // Check if admin has approved
-            elseif (!$user['admin_approved']) {
-                $error = 'Your account is pending admin approval. You will be notified once approved.';
-            }
-            // Check if account is active
-            elseif (!$user['is_active']) {
-                $error = 'Your account has been deactivated. Please contact support.';
-            }
-            else {
-                // Successful login
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['email'] = $user['email'];
-                $_SESSION['full_name'] = $user['full_name'];
-                $_SESSION['is_admin'] = false;
-                
-                // Update last login
-                $stmt = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
-                $stmt->execute([$user['id']]);
-                
-                header("Location: dashboard.php");
-                exit();
+        if ($user) {
+            // Verify password
+            if (password_verify($password, $user['password'])) {
+                // Check if account is approved
+                if (!$user['is_admin'] && !$user['admin_approved']) {
+                    if ($user['email_verified'] && $user['registration_status'] == 'verified') {
+                        $error = "Your account is pending admin approval. Please wait for approval or contact support.";
+                    } elseif (!$user['email_verified']) {
+                        $error = "Please verify your email first. Check your email for OTP.";
+                    } elseif ($user['registration_status'] == 'rejected') {
+                        $error = "Your account registration has been rejected. Please contact support.";
+                    } else {
+                        $error = "Your account is not yet active. Please complete the registration process.";
+                    }
+                } elseif ($user['is_deleted']) {
+                    $error = "This account has been deactivated. Please contact support.";
+                } else {
+                    // Login successful - set session variables
+                    $_SESSION['user_id'] = $user['id'];
+                    $_SESSION['full_name'] = $user['full_name'];
+                    $_SESSION['email'] = $user['email'];
+                    $_SESSION['is_admin'] = $user['is_admin'];
+                    $_SESSION['admin_approved'] = $user['admin_approved'];
+                    $_SESSION['email_verified'] = $user['email_verified'];
+                    
+                    // Update last login
+                    $stmt = $pdo->prepare("UPDATE users SET last_login = NOW(), login_count = COALESCE(login_count, 0) + 1 WHERE id = ?");
+                    $stmt->execute([$user['id']]);
+                    
+                    // Redirect based on user type
+                    if ($user['is_admin']) {
+                        header("Location: ../admin/index.php");
+                    } else {
+                        header("Location: dashboard.php");
+                    }
+                    exit();
+                }
+            } else {
+                $error = "Invalid email or password.";
             }
         } else {
-            $error = 'Invalid email or password';
+            $error = "Invalid email or password.";
         }
     }
 }
@@ -71,94 +81,86 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Customer Login - BillPay Pro</title>
+    <title>Login - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
-    <!-- Lucide Icons CDN -->
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        .password-container {
-            position: relative;
+        .login-container {
+            max-width: 400px;
+            margin: 2rem auto;
+            padding: 0 1rem;
         }
         
-        .password-container .form-control {
-            padding-right: 45px;
-            height: 48px;
-            padding: 0.75rem;
-            line-height: normal;
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
         }
         
-        .toggle-password {
-            position: absolute;
-            right: 10px;
-            top: 22px;
-            background: transparent !important;
-            border: none;
-            cursor: pointer;
-            color: #666;
-            padding: 4px;
-            width: 24px;
-            height: 24px;
+        .login-icon {
+            width: 80px;
+            height: 80px;
+            background: #075B5E;
+            color: white;
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            border-radius: 2px;
-            margin: 0;
-            outline: none;
+            font-size: 2rem;
+            margin: 0 auto 1rem;
         }
         
-        .toggle-password:hover {
-            background: #f8f9fa !important;
-        }
-        
-        .toggle-password:active,
-        .toggle-password:focus {
-            background: transparent !important;
-            outline: none;
-            box-shadow: none;
-        }
-        
-        .toggle-password .icon {
-            width: 1.2rem;
-            height: 1.2rem;
-            margin: 0;
-        }
-        
-        /* Ensure proper form group spacing */
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-weight: 500;
-        }
-        
-        .demo-accounts {
-            text-align: center;
-            margin-top: 1rem;
-            color: #666;
-            font-size: 0.9rem;
-        }
-        
-        .force-logout {
-            text-align: center;
-            margin-top: 1rem;
-        }
-        
-        .force-logout a {
-            color: #e74c3c;
-            font-size: 0.9rem;
-            text-decoration: none;
-        }
-        
-        .registration-success {
-            background: #d4edda;
-            color: #155724;
+        .registration-info {
+            background: #f0f7f7;
             padding: 1rem;
-            border-radius: 4px;
-            margin-bottom: 1rem;
-            border-left: 4px solid #28a745;
+            border-radius: 5px;
+            margin: 1rem 0;
+            border-left: 4px solid #075B5E;
+        }
+        
+        .registration-info h4 {
+            margin-top: 0;
+            color: #075B5E;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .status-steps {
+            margin-top: 1rem;
+        }
+        
+        .status-step {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .status-step i {
+            width: 1rem;
+            height: 1rem;
+        }
+        
+        .step-complete {
+            color: #27ae60;
+        }
+        
+        .step-pending {
+            color: #f39c12;
+        }
+        
+        .forgot-password {
+            text-align: right;
+            margin-top: 0.5rem;
+        }
+        
+        .demo-credentials {
+            background: #fff3cd;
+            padding: 1rem;
+            border-radius: 5px;
+            margin: 1rem 0;
+            border-left: 4px solid #ffc107;
         }
     </style>
 </head>
@@ -176,79 +178,126 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     </header>
 
     <div class="container">
-        <div class="card" style="max-width: 400px; margin: 2rem auto;">
-            <h2 style="text-align: center; margin-bottom: 1.5rem;">Customer Login</h2>
+        <div class="login-container">
+            <!-- Login Header -->
+            <div class="login-header">
+                <div class="login-icon">
+                    <i data-lucide="log-in"></i>
+                </div>
+                <h1>Welcome Back</h1>
+                <p>Login to manage your bills and payments</p>
+            </div>
             
-            <?php if (isset($success)): ?>
-                <div class="registration-success">
+            <!-- Display messages -->
+            <?php if (isset($_SESSION['registration_success'])): ?>
+                <div class="alert alert-success">
                     <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                    <?php echo $success; ?>
+                    <?php echo $_SESSION['registration_success']; unset($_SESSION['registration_success']); ?>
                 </div>
             <?php endif; ?>
             
             <?php if ($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
+                <div class="alert alert-danger">
+                    <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <?php echo $error; ?>
+                </div>
             <?php endif; ?>
             
-            <form method="POST" action="">
+            <!-- Registration Info -->
+            <div class="registration-info">
+                <h4><i data-lucide="info"></i> Registration Status</h4>
+                <p>New to BillPay Pro? The registration process includes:</p>
+                <div class="status-steps">
+                    <div class="status-step">
+                        <i data-lucide="circle" class="step-pending"></i>
+                        <span>Email Verification (OTP)</span>
+                    </div>
+                    <div class="status-step">
+                        <i data-lucide="circle" class="step-pending"></i>
+                        <span>Admin Approval (Required)</span>
+                    </div>
+                    <div class="status-step">
+                        <i data-lucide="circle" class="step-pending"></i>
+                        <span>Account Activation</span>
+                    </div>
+                </div>
+                <p style="margin-top: 0.5rem; font-size: 0.9rem;">
+                    <a href="register.php">Click here to register</a>
+                </p>
+            </div>
+            
+            <!-- Demo Credentials -->
+            <div class="demo-credentials">
+                <h4><i data-lucide="key"></i> Demo Credentials</h4>
+                <p><strong>Admin:</strong> admin@billpay.com / admin123</p>
+                <p><strong>Customer:</strong> customer@billpay.com / customer123</p>
+                <p><small>For testing purposes only</small></p>
+            </div>
+            
+            <!-- Login Form -->
+            <form method="POST" action="" class="login-form">
                 <div class="form-group">
-                    <label for="email">Email Address</label> <!-- Changed from Phone to Email -->
+                    <label for="email">
+                        <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Email Address
+                    </label>
                     <input type="email" id="email" name="email" class="form-control" 
                            value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
-                           placeholder="your@email.com" required>
+                           required>
                 </div>
                 
                 <div class="form-group">
-                    <label for="password">Password</label>
-                    <div class="password-container">
+                    <label for="password">
+                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Password
+                    </label>
+                    <div style="position: relative;">
                         <input type="password" id="password" name="password" class="form-control" required>
-                        <button type="button" class="toggle-password" onclick="togglePassword()" aria-label="Toggle password visibility">
-                            <i data-lucide="eye" class="icon" id="password-icon"></i>
+                        <button type="button" onclick="togglePassword('password')" 
+                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); 
+                                       background: none; border: none; cursor: pointer;">
+                            <i data-lucide="eye" style="width: 1.2rem; height: 1.2rem;"></i>
                         </button>
+                    </div>
+                    <div class="forgot-password">
+                        <a href="forgot_password.php">Forgot Password?</a>
                     </div>
                 </div>
                 
-                <button type="submit" class="btn" style="width: 100%;">Login</button>
+                <button type="submit" class="btn" style="width: 100%;">
+                    <i data-lucide="log-in" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>
+                    Login
+                </button>
             </form>
             
-            <p style="text-align: center; margin-top: 1rem;">
-                Don't have an account? <a href="register.php">Register here</a>
-            </p>
-
-            <!-- Add force logout option -->
-            <div class="force-logout">
-                <a href="clear_sessions.php">
-                    <i data-lucide="refresh-cw" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>
-                    Clear Sessions
-                </a>
+            <div style="text-align: center; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e9ecef;">
+                <p>Don't have an account? <a href="register.php">Register here</a></p>
             </div>
         </div>
     </div>
 
     <footer class="footer">
         <div class="container">
-            <p>&copy; <?php echo date('Y'); ?> Online Billing System - BCA Project | Tribhuvan University</p>
+            <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
         </div>
     </footer>
 
     <script>
-        function togglePassword() {
-            const passwordInput = document.getElementById('password');
-            const passwordIcon = document.getElementById('password-icon');
+        lucide.createIcons();
+        
+        function togglePassword(fieldId) {
+            const field = document.getElementById(fieldId);
+            const icon = field.nextElementSibling.querySelector('i');
             
-            if (passwordInput.type === 'password') {
-                passwordInput.type = 'text';
-                passwordIcon.setAttribute('data-lucide', 'eye-off');
+            if (field.type === 'password') {
+                field.type = 'text';
+                icon.setAttribute('data-lucide', 'eye-off');
             } else {
-                passwordInput.type = 'password';
-                passwordIcon.setAttribute('data-lucide', 'eye');
+                field.type = 'password';
+                icon.setAttribute('data-lucide', 'eye');
             }
-            // Re-render the icon
             lucide.createIcons();
         }
-        
-        // Initialize Lucide Icons
-        lucide.createIcons();
     </script>
 </body>
 </html>
