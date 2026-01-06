@@ -1,16 +1,21 @@
 <?php
 session_start();
-include '../includes/config.php';
+
+// Set a base path constant for includes
+define('BASE_PATH', dirname(dirname(__FILE__)));
+
+// Include configuration
+require_once BASE_PATH . '/includes/config.php';
+require_once BASE_PATH . '/includes/db_connection.php';
 
 // Check if user is in OTP verification process
-if (!isset($_SESSION['temp_user_id']) || !isset($_SESSION['temp_otp'])) {
+if (!isset($_SESSION['temp_user_id'])) {
     header("Location: register.php");
     exit();
 }
 
 $user_id = $_SESSION['temp_user_id'];
-$stored_otp = $_SESSION['temp_otp'];
-$email = $_SESSION['temp_email'];
+$email = $_SESSION['temp_email'] ?? '';
 $error = '';
 
 // Handle OTP verification
@@ -19,33 +24,53 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     
     if (empty($entered_otp)) {
         $error = "Please enter the OTP";
-    } elseif ($entered_otp == $stored_otp) {
-        // OTP is correct - update user status
-        try {
-            $stmt = $pdo->prepare("UPDATE users SET email_verified = 1, otp = NULL, otp_expiry = NULL, 
-                                  registration_status = 'verified' WHERE id = ?");
-            $stmt->execute([$user_id]);
-            
-            // Clear temp session
-            unset($_SESSION['temp_user_id']);
-            unset($_SESSION['temp_otp']);
-            unset($_SESSION['temp_email']);
-            
-            // Show success message
-            $_SESSION['registration_success'] = "Email verified successfully! Your account is pending admin approval. You will be notified once approved.";
-            
-            header("Location: login.php");
-            exit();
-            
-        } catch (Exception $e) {
-            $error = "Error updating verification status: " . $e->getMessage();
-        }
     } else {
-        $error = "Invalid OTP. Please try again.";
+        // Get stored OTP from database
+        $stmt = $pdo->prepare("SELECT otp, otp_expiry FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user_data = $stmt->fetch();
+        
+        if ($user_data) {
+            $stored_otp = $user_data['otp'];
+            $otp_expiry = $user_data['otp_expiry'];
+            
+            // Check if OTP is expired
+            if (strtotime($otp_expiry) < time()) {
+                $error = "OTP has expired. Please request a new one.";
+            } elseif ($entered_otp == $stored_otp) {
+                // OTP is correct - update user status
+                try {
+                    $stmt = $pdo->prepare("UPDATE users SET email_verified = 1, otp = NULL, otp_expiry = NULL, 
+                                          registration_status = 'verified', updated_at = NOW() WHERE id = ?");
+                    $stmt->execute([$user_id]);
+                    
+                    // Clear temp session
+                    unset($_SESSION['temp_user_id']);
+                    unset($_SESSION['temp_email']);
+                    unset($_SESSION['temp_full_name']);
+                    
+                    // Show success message
+                    $_SESSION['registration_success'] = "Email verified successfully! Your account is pending admin approval. You will be notified once approved.";
+                    
+                    header("Location: login.php");
+                    exit();
+                    
+                } catch (Exception $e) {
+                    $error = "Error updating verification status: " . $e->getMessage();
+                }
+            } else {
+                $error = "Invalid OTP. Please try again.";
+            }
+        } else {
+            $error = "User not found. Please register again.";
+            unset($_SESSION['temp_user_id']);
+            unset($_SESSION['temp_email']);
+            unset($_SESSION['temp_full_name']);
+        }
     }
 }
 
-// Check if OTP has expired
+// Check if OTP has expired on page load
 $stmt = $pdo->prepare("SELECT otp_expiry FROM users WHERE id = ?");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch();
@@ -54,8 +79,8 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
     $error = "OTP has expired. Please register again.";
     // Clear invalid session
     unset($_SESSION['temp_user_id']);
-    unset($_SESSION['temp_otp']);
     unset($_SESSION['temp_email']);
+    unset($_SESSION['temp_full_name']);
 }
 ?>
 
@@ -130,12 +155,28 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
             text-align: center;
         }
         
-        .otp-demo {
-            background: #fff3cd;
-            padding: 1rem;
-            border-radius: 5px;
-            margin: 1rem 0;
-            border-left: 4px solid #ffc107;
+        .resend-otp {
+            text-align: center;
+            margin-top: 1rem;
+        }
+        
+        .resend-btn {
+            background: none;
+            border: none;
+            color: #075B5E;
+            text-decoration: underline;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        
+        .resend-btn:hover {
+            color: #0a7c80;
+        }
+        
+        .resend-btn:disabled {
+            color: #999;
+            cursor: not-allowed;
+            text-decoration: none;
         }
     </style>
 </head>
@@ -172,11 +213,11 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
                 </div>
             <?php endif; ?>
             
-            <!-- OTP Demo Note -->
-            <div class="otp-demo">
-                <h4><i data-lucide="info" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>Demo OTP</h4>
-                <p>For demonstration purposes, use OTP: <strong><?php echo $stored_otp; ?></strong></p>
-                <p><small>In production, this would be sent to your email.</small></p>
+            <!-- OTP Note -->
+            <div class="otp-note">
+                <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>
+                <p>Check your email inbox (and spam folder) for the OTP code.</p>
+                <p>The OTP is valid for 10 minutes.</p>
             </div>
             
             <!-- OTP Form -->
@@ -195,9 +236,10 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
                     OTP valid for: <span id="countdown">10:00</span>
                 </div>
                 
-                <div class="otp-note">
-                    <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>
-                    Didn't receive OTP? <a href="resend_otp.php">Resend OTP</a>
+                <div class="resend-otp">
+                    <button type="button" id="resendBtn" class="resend-btn" onclick="resendOTP()" disabled>
+                        Resend OTP (<span id="resendTimer">60</span>s)
+                    </button>
                 </div>
                 
                 <button type="submit" class="btn" style="width: 100%;">
@@ -254,7 +296,7 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
             document.getElementById('fullOtp').value = fullOtp;
         }
         
-        // Timer countdown
+        // Timer countdown for OTP
         let timeLeft = 600; // 10 minutes in seconds
         
         function updateTimer() {
@@ -273,9 +315,59 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
             }
         }
         
+        // Resend OTP timer
+        let resendTimeLeft = 60;
+        
+        function updateResendTimer() {
+            document.getElementById('resendTimer').textContent = resendTimeLeft;
+            
+            if (resendTimeLeft > 0) {
+                resendTimeLeft--;
+                setTimeout(updateResendTimer, 1000);
+            } else {
+                document.getElementById('resendBtn').disabled = false;
+                document.getElementById('resendBtn').innerHTML = 'Resend OTP';
+            }
+        }
+        
+        // Resend OTP function
+        function resendOTP() {
+            if (resendTimeLeft > 0) return;
+            
+            // Disable button and reset timer
+            document.getElementById('resendBtn').disabled = true;
+            resendTimeLeft = 60;
+            updateResendTimer();
+            
+            // Send AJAX request to resend OTP
+            fetch('resend_otp.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'action=resend_otp'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('New OTP has been sent to your email.');
+                    // Reset main timer
+                    timeLeft = 600;
+                    updateTimer();
+                } else {
+                    alert('Failed to resend OTP: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Failed to resend OTP. Please try again.');
+            });
+        }
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             updateTimer();
+            updateResendTimer();
             
             // Focus first OTP input
             const firstInput = document.querySelector('input[name="otp[]"]:first-child');

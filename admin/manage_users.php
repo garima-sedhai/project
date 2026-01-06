@@ -1,7 +1,11 @@
 <?php
 session_start();
-require_once '../includes/config.php';
-require_once '../includes/db_connection.php';
+
+// Set base path
+define('BASE_PATH', dirname(dirname(dirname(__FILE__))));
+require_once BASE_PATH . '/includes/config.php';
+require_once BASE_PATH . '/includes/db_connection.php';
+require_once BASE_PATH . '/includes/email_functions.php';
 
 // Redirect if not admin
 if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
@@ -33,6 +37,8 @@ if ($status_filter === 'pending') {
     $query .= " AND registration_status = 'rejected'";
 } elseif ($status_filter === 'unverified') {
     $query .= " AND (email_verified = 0 OR registration_status = 'pending')";
+} elseif ($status_filter === 'verified') {
+    $query .= " AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'";
 }
 
 $query .= " ORDER BY created_at DESC";
@@ -46,22 +52,44 @@ $users = $stmt->fetchAll();
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['approve_user'])) {
         $user_id = $_POST['user_id'];
+        
+        // Get user details before updating
+        $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch();
+        
         $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
+        
+        // Send approval email
+        if ($user) {
+            sendApprovalEmail($user['email'], $user['full_name']);
+        }
         
         // Create notification for user
         $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Approved', 'Your account has been approved by the administrator. You can now access all features.', 'account', NOW())");
         $stmt->execute([$user_id]);
         
-        $_SESSION['success_message'] = "User approved successfully!";
+        $_SESSION['success_message'] = "User approved successfully! Approval email has been sent.";
         header("Location: manage_users.php");
         exit;
     }
     
     if (isset($_POST['reject_user'])) {
         $user_id = $_POST['user_id'];
+        
+        // Get user details before updating
+        $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch();
+        
         $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
+        
+        // Send rejection email
+        if ($user) {
+            sendRejectionEmail($user['email'], $user['full_name']);
+        }
         
         // Create notification for user
         $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Rejected', 'Your account registration has been rejected by the administrator. Please contact support for more information.', 'account', NOW())");
@@ -94,21 +122,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['resend_verification'])) {
         $user_id = $_POST['user_id'];
         
-        // Generate new OTP
-        $otp = rand(100000, 999999);
-        $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
-        
-        $stmt = $pdo->prepare("UPDATE users SET otp = ?, otp_expiry = ?, email_verified = 0, registration_status = 'pending' WHERE id = ?");
-        $stmt->execute([$otp, $otp_expiry, $user_id]);
-        
-        // Get user email
+        // Get user details
         $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
         $stmt->execute([$user_id]);
         $user = $stmt->fetch();
         
-        // Send email with OTP (you'll need to implement email sending)
-        // For now, we'll just log it
-        $_SESSION['success_message'] = "Verification OTP resent to user. OTP: $otp (This expires at $otp_expiry)";
+        if ($user) {
+            // Generate new OTP
+            $otp = rand(100000, 999999);
+            $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+            
+            $stmt = $pdo->prepare("UPDATE users SET otp = ?, otp_expiry = ?, email_verified = 0, registration_status = 'pending', updated_at = NOW() WHERE id = ?");
+            $stmt->execute([$otp, $otp_expiry, $user_id]);
+            
+            // Send OTP email
+            $email_sent = sendOTPEmail($user['email'], $user['full_name'], $otp);
+            
+            if ($email_sent) {
+                $_SESSION['success_message'] = "Verification OTP resent to user successfully!";
+            } else {
+                $_SESSION['error_message'] = "Failed to send verification email. Please try again.";
+            }
+        } else {
+            $_SESSION['error_message'] = "User not found.";
+        }
+        
         header("Location: manage_users.php");
         exit;
     }
@@ -415,6 +453,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .otp-info strong {
             color: #075B5E;
         }
+        
+        .email-notice {
+            background: #f0f7f7;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            margin-top: 5px;
+            border-left: 3px solid #075B5E;
+        }
     </style>
 </head>
 <body>
@@ -431,12 +478,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <!-- Display messages -->
         <?php if (isset($_SESSION['success_message'])): ?>
             <div class="message success-message">
+                <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
                 <?php echo $_SESSION['success_message']; unset($_SESSION['success_message']); ?>
             </div>
         <?php endif; ?>
         
         <?php if (isset($_SESSION['error_message'])): ?>
             <div class="message error-message">
+                <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
                 <?php echo $_SESSION['error_message']; unset($_SESSION['error_message']); ?>
             </div>
         <?php endif; ?>
@@ -564,6 +613,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <span class="status-badge <?php echo $status_class; ?>"><?php echo $status_text; ?></span>
                                 </p>
                                 
+                                <!-- Email notification notice for pending approval -->
+                                <?php if ($customer['email_verified'] && $customer['registration_status'] == 'verified' && !$customer['admin_approved']): ?>
+                                    <div class="email-notice">
+                                        <i data-lucide="mail" style="width: 0.9rem; height: 0.9rem; margin-right: 0.3rem; vertical-align: middle;"></i>
+                                        <small>Approval will send email notification</small>
+                                    </div>
+                                <?php endif; ?>
+                                
                                 <!-- Show OTP info if available -->
                                 <?php if (!empty($customer['otp']) && $customer['otp_expiry'] > date('Y-m-d H:i:s')): ?>
                                     <div class="otp-info">
@@ -579,14 +636,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
                                     <button type="submit" name="approve_user" class="btn btn-success">
-                                        <i data-lucide="check"></i> Approve
+                                        <i data-lucide="check"></i> Approve & Email
                                     </button>
                                 </form>
                                 
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
                                     <button type="submit" name="reject_user" class="btn btn-danger">
-                                        <i data-lucide="x"></i> Reject
+                                        <i data-lucide="x"></i> Reject & Email
                                     </button>
                                 </form>
                             <?php endif; ?>
@@ -642,6 +699,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         resendForms.forEach(form => {
             form.addEventListener('submit', function(e) {
                 if (!confirm('Are you sure you want to resend verification email to this user?')) {
+                    e.preventDefault();
+                }
+            });
+        });
+        
+        // Confirm before approving/rejecting
+        const approveForms = document.querySelectorAll('form[action*="approve_user"]');
+        approveForms.forEach(form => {
+            form.addEventListener('submit', function(e) {
+                if (!confirm('Are you sure you want to approve this user? An approval email will be sent.')) {
+                    e.preventDefault();
+                }
+            });
+        });
+        
+        const rejectForms = document.querySelectorAll('form[action*="reject_user"]');
+        rejectForms.forEach(form => {
+            form.addEventListener('submit', function(e) {
+                if (!confirm('Are you sure you want to reject this user? A rejection email will be sent.')) {
                     e.preventDefault();
                 }
             });

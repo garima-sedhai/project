@@ -1,10 +1,21 @@
 <?php
+// Start session before anything else
 session_start();
-include '../includes/config.php';
+
+// Calculate correct base path (since register.php is in customer folder)
+$base_path = dirname(__DIR__); // This goes up one level from customer folder
+
+// Include configuration
+require_once $base_path . '/includes/config.php';
+require_once $base_path . '/includes/db_connection.php';
 
 // If already logged in, redirect to dashboard
 if (isset($_SESSION['user_id'])) {
-    header("Location: dashboard.php");
+    if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) {
+        header("Location: ../admin/index.php");
+    } else {
+        header("Location: dashboard.php");
+    }
     exit();
 }
 
@@ -86,23 +97,30 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 // Store user info in session for OTP verification
                 $_SESSION['temp_user_id'] = $user_id;
                 $_SESSION['temp_email'] = $email;
-                $_SESSION['temp_otp'] = $otp;
+                $_SESSION['temp_full_name'] = $full_name;
                 
-                // For demo purposes, we'll simulate sending OTP
-                // In production, you would send actual email here
+                // Send actual OTP email
+                require_once BASE_PATH . '/includes/email_functions.php';
+                $email_sent = sendOTPEmail($email, $full_name, $otp);
                 
-                // Create admin notification for new registration
-                $admin_message = "New customer registration: " . $full_name . 
-                               " (" . $email . ") - Please review and approve.";
-                
-                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
-                                      SELECT id, 'New Registration', ?, 'registration', NOW() 
-                                      FROM users WHERE is_admin = TRUE");
-                $stmt->execute([$admin_message]);
-                
-                // Redirect to OTP verification
-                header("Location: verify_otp.php?email=" . urlencode($email));
-                exit();
+                if ($email_sent) {
+                    // Create admin notification for new registration
+                    $admin_message = "New customer registration: " . $full_name . 
+                                   " (" . $email . ") - Please review and approve.";
+                    
+                    $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
+                                          SELECT id, 'New Registration', ?, 'registration', NOW() 
+                                          FROM users WHERE is_admin = TRUE");
+                    $stmt->execute([$admin_message]);
+                    
+                    // Redirect to OTP verification
+                    header("Location: verify_otp.php?email=" . urlencode($email));
+                    exit();
+                } else {
+                    $error = "Failed to send OTP email. Please try again or contact support.";
+                    // Delete the user record since email failed
+                    $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$user_id]);
+                }
                 
             } else {
                 $error = "Registration failed. Please try again.";
@@ -236,6 +254,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             padding-top: 1rem;
             border-top: 1px solid #e9ecef;
         }
+        
+        .email-note {
+            background: #e7f4f4;
+            padding: 1rem;
+            border-radius: 5px;
+            margin: 1rem 0;
+            border-left: 4px solid #075B5E;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -296,6 +323,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     <?php echo $success; ?>
                 </div>
             <?php endif; ?>
+            
+            <!-- Email Note -->
+            <div class="email-note">
+                <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                <strong>Important:</strong> A verification OTP will be sent to your email. Please check your inbox (and spam folder) after registration.
+            </div>
             
             <!-- Registration Form -->
             <form method="POST" action="" class="register-form" id="registerForm">
@@ -385,7 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     <strong>Registration Process:</strong>
                     <ol style="margin: 0.5rem 0 0 1.5rem; font-size: 0.9rem;">
                         <li>Complete this registration form</li>
-                        <li>Verify your email with OTP</li>
+                        <li>Verify your email with OTP (sent to your email)</li>
                         <li>Wait for admin approval (you'll be notified)</li>
                         <li>Login and access your account</li>
                     </ol>
