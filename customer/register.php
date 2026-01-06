@@ -1,12 +1,14 @@
 <?php
-// Start session before anything else
-session_start();
-
 // Calculate correct base path (since register.php is in customer folder)
 $base_path = dirname(__DIR__); // This goes up one level from customer folder
 
-// Include configuration
+// Include configuration FIRST (before session_start)
 require_once $base_path . '/includes/config.php';
+
+// Now start the session
+session_start();
+
+// Include database connection
 require_once $base_path . '/includes/db_connection.php';
 
 // If already logged in, redirect to dashboard
