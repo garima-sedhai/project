@@ -15,32 +15,52 @@ if (isset($_SESSION['user_id']) && isset($_SESSION['is_admin']) && $_SESSION['is
 
 $error = '';
 
+// Check for registration success message
+if (isset($_SESSION['registration_success'])) {
+    $success = $_SESSION['registration_success'];
+    unset($_SESSION['registration_success']);
+}
+
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $phone = trim($_POST['phone']);
+    $email = trim($_POST['email']); // Changed from phone to email
     $password = $_POST['password'];
     
-    if (empty($phone) || empty($password)) {
-        $error = 'Please enter both phone number and password';
+    if (empty($email) || empty($password)) {
+        $error = 'Please enter both email and password';
     } else {
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE phone = ? AND is_admin = FALSE");
-        $stmt->execute([$phone]);
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND is_admin = FALSE");
+        $stmt->execute([$email]);
         $user = $stmt->fetch();
         
         if ($user && password_verify($password, $user['password'])) {
-            if (!$user['phone_verified']) {
-                $error = 'Please verify your phone number first';
-            } else {
+            // Check if email is verified
+            if (!$user['email_verified']) {
+                $error = 'Please verify your email address first';
+            }
+            // Check if admin has approved
+            elseif (!$user['admin_approved']) {
+                $error = 'Your account is pending admin approval. You will be notified once approved.';
+            }
+            // Check if account is active
+            elseif (!$user['is_active']) {
+                $error = 'Your account has been deactivated. Please contact support.';
+            }
+            else {
+                // Successful login
                 $_SESSION['user_id'] = $user['id'];
-                $_SESSION['phone'] = $user['phone'];
                 $_SESSION['email'] = $user['email'];
                 $_SESSION['full_name'] = $user['full_name'];
                 $_SESSION['is_admin'] = false;
+                
+                // Update last login
+                $stmt = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+                $stmt->execute([$user['id']]);
                 
                 header("Location: dashboard.php");
                 exit();
             }
         } else {
-            $error = 'Invalid phone number or password';
+            $error = 'Invalid email or password';
         }
     }
 }
@@ -131,6 +151,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             font-size: 0.9rem;
             text-decoration: none;
         }
+        
+        .registration-success {
+            background: #d4edda;
+            color: #155724;
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            border-left: 4px solid #28a745;
+        }
     </style>
 </head>
 <body>
@@ -150,16 +179,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         <div class="card" style="max-width: 400px; margin: 2rem auto;">
             <h2 style="text-align: center; margin-bottom: 1.5rem;">Customer Login</h2>
             
+            <?php if (isset($success)): ?>
+                <div class="registration-success">
+                    <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <?php echo $success; ?>
+                </div>
+            <?php endif; ?>
+            
             <?php if ($error): ?>
                 <div class="alert alert-danger"><?php echo $error; ?></div>
             <?php endif; ?>
             
             <form method="POST" action="">
                 <div class="form-group">
-                    <label for="phone">Phone Number</label>
-                    <input type="tel" id="phone" name="phone" class="form-control" 
-                           value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>" 
-                           pattern="[0-9]{10}" placeholder="98XXXXXXXX" required>
+                    <label for="email">Email Address</label> <!-- Changed from Phone to Email -->
+                    <input type="email" id="email" name="email" class="form-control" 
+                           value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
+                           placeholder="your@email.com" required>
                 </div>
                 
                 <div class="form-group">

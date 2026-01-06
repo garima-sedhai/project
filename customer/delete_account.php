@@ -13,12 +13,12 @@ $message = '';
 $message_type = '';
 
 // Get current user data
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ? AND status = 'active'");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch();
 
 if (!$user) {
-    $_SESSION['error'] = "User not found.";
+    $_SESSION['error'] = "User not found or account already deleted.";
     header("Location: dashboard.php");
     exit();
 }
@@ -44,8 +44,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     
     // Check for pending bills
     $stmt = $pdo->prepare("SELECT COUNT(*) as pending_count FROM bills WHERE user_id = ? AND status = 'pending'");
-    $stmt->execute([$user_id]);
-    $pending_bills = $stmt->fetch();
+$stmt->execute([$user_id]);
+$pending_bills = $stmt->fetch();
     
     if ($pending_bills['pending_count'] > 0) {
         $errors[] = "You cannot delete your account while you have pending bills. Please pay or cancel them first.";
@@ -56,29 +56,47 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             // Begin transaction
             $pdo->beginTransaction();
             
-            // Archive user data (optional - depends on your data retention policy)
+            // OPTION 1: SOFT DELETE (Mark as deleted but keep data)
+            $delete_stmt = $pdo->prepare("UPDATE users SET 
+                status = 'deleted', 
+                email = CONCAT('deleted_', UNIX_TIMESTAMP(), '_', email),
+                phone = CONCAT('deleted_', UNIX_TIMESTAMP(), '_', phone),
+                deleted_at = NOW(),
+                deletion_reason = ?
+                WHERE id = ?");
+            $delete_stmt->execute([$reason, $user_id]);
+            
+            // OPTION 2: HARD DELETE (Remove from database completely)
+            // Uncomment below if you want to permanently delete
+            /*
+            // Archive user data first
             $archive_stmt = $pdo->prepare("INSERT INTO deleted_users_archive 
                                           SELECT *, NOW() as deleted_at, ? as deletion_reason 
                                           FROM users WHERE id = ?");
             $archive_stmt->execute([$reason, $user_id]);
             
-            // Delete user's bills and payments (if cascade not set up)
+            // Delete user's payments
             $delete_payments = $pdo->prepare("DELETE FROM payments WHERE user_id = ?");
             $delete_payments->execute([$user_id]);
             
+            // Delete user's bills
             $delete_bills = $pdo->prepare("DELETE FROM bills WHERE user_id = ?");
             $delete_bills->execute([$user_id]);
             
             // Delete the user
             $delete_user = $pdo->prepare("DELETE FROM users WHERE id = ?");
             $delete_user->execute([$user_id]);
+            */
             
             // Commit transaction
             $pdo->commit();
             
-            // Clear session and redirect to login
+            // Clear session and redirect to registration page
             session_destroy();
-            header("Location: ../index.php?message=account_deleted");
+            
+            // Show success message on registration page
+            $_SESSION['account_deleted'] = true;
+            header("Location: ../register.php?message=account_deleted");
             exit();
             
         } catch (PDOException $e) {
@@ -302,6 +320,15 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             font-weight: 500;
         }
         
+        .deletion-note {
+            background: #e8f4f8;
+            border: 1px solid #b6e0fe;
+            border-radius: 4px;
+            padding: 1rem;
+            margin-top: 1.5rem;
+            color: #075B5E;
+        }
+        
         @media (max-width: 768px) {
             .form-actions {
                 flex-direction: column;
@@ -341,7 +368,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
 
     <div class="container">
         <div class="delete-container">
-            <!-- Back Navigation - UPDATED: Now links to dashboard.php -->
+            <!-- Back Navigation -->
             <div style="margin-bottom: 1.5rem;">
                 <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
                     <i data-lucide="arrow-left"></i>
@@ -377,6 +404,10 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     <span class="info-value"><?php echo htmlspecialchars($user['email']); ?></span>
                 </div>
                 <div class="info-item">
+                    <span class="info-label">Phone:</span>
+                    <span class="info-value"><?php echo htmlspecialchars($user['phone'] ?? 'N/A'); ?></span>
+                </div>
+                <div class="info-item">
                     <span class="info-label">Customer Code:</span>
                     <span class="info-value"><?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></span>
                 </div>
@@ -384,6 +415,17 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     <span class="info-label">Member Since:</span>
                     <span class="info-value"><?php echo date('F d, Y', strtotime($user['created_at'])); ?></span>
                 </div>
+            </div>
+            
+            <!-- Important Note -->
+            <div class="deletion-note">
+                <h4 style="margin: 0 0 0.5rem 0; color: #075B5E;">
+                    <i data-lucide="info"></i> Important Information
+                </h4>
+                <p style="margin: 0; font-size: 0.9rem;">
+                    After account deletion, your email and phone number will be released and can be used to create a new account. 
+                    All your personal data will be permanently removed from our active systems.
+                </p>
             </div>
             
             <!-- Warning Box -->
@@ -396,6 +438,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                     <li>You will lose access to all services immediately</li>
                     <li>This action cannot be undone or recovered</li>
                     <li>Any pending bills must be settled before deletion</li>
+                    <li>Your email and phone number will be available for new registration</li>
                 </ul>
             </div>
             
@@ -424,6 +467,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                         <option value="technical_issues">Technical issues</option>
                         <option value="customer_service">Customer service issues</option>
                         <option value="no_longer_need">No longer need the service</option>
+                        <option value="privacy_concerns">Privacy concerns</option>
                         <option value="other">Other</option>
                     </select>
                 </div>
@@ -473,7 +517,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 return false;
             }
             
-            return confirm('⚠️ FINAL WARNING: This will permanently delete your account and all associated data. This action cannot be undone. Are you absolutely sure?');
+            return confirm('⚠️ FINAL WARNING: This will permanently delete your account and all associated data.\n\n• Your email and phone will be available for new registration\n• All your data will be removed\n• This action cannot be undone\n\nAre you absolutely sure?');
         }
         
         // Form validation
@@ -482,6 +526,23 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 e.preventDefault();
                 return false;
             }
+            
+            // Show loading state
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalText = submitBtn.innerHTML;
+            submitBtn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Deleting Account...';
+            submitBtn.disabled = true;
+            
+            // Create spin animation
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+            
             return true;
         });
     </script>

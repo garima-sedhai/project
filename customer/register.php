@@ -2,8 +2,8 @@
 session_start();
 include '../includes/config.php';
 
-// Redirect if already logged in as customer
-if (isset($_SESSION['user_id']) && !$_SESSION['is_admin']) {
+// If already logged in, redirect to dashboard
+if (isset($_SESSION['user_id'])) {
     header("Location: dashboard.php");
     exit();
 }
@@ -11,75 +11,109 @@ if (isset($_SESSION['user_id']) && !$_SESSION['is_admin']) {
 $error = '';
 $success = '';
 
+// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    if (isset($_POST['verify_code'])) {
-        $customer_code = trim($_POST['customer_code']);
-        
-        if (empty($customer_code)) {
-            $error = 'Please enter customer code';
-        } else {
-            // SIMPLE CHECK: Find customer by code
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE customer_code = ? AND is_admin = FALSE");
-            $stmt->execute([$customer_code]);
-            $customer = $stmt->fetch();
-            
-            if ($customer) {
-                if ($customer['phone_verified']) {
-                    $error = 'This customer is already registered. Please login.';
-                } else {
-                    // Store in session and move to password setup
-                    $_SESSION['register_customer_id'] = $customer['id'];
-                    $_SESSION['register_customer_code'] = $customer_code;
-                    $_SESSION['register_customer_name'] = $customer['full_name'];
-                    $success = "Code verified! Welcome " . $customer['full_name'] . ". Please set your password.";
-                }
-            } else {
-                $error = 'Invalid customer code. Please check and try again.';
-            }
-        }
+    $full_name = trim($_POST['full_name']);
+    $email = trim($_POST['email']);
+    $phone = trim($_POST['phone']);
+    $address = trim($_POST['address']);
+    $password = $_POST['password'];
+    $confirm_password = $_POST['confirm_password'];
+    
+    // Validate inputs
+    $errors = [];
+    
+    if (empty($full_name)) {
+        $errors[] = "Full name is required.";
     }
-    elseif (isset($_POST['set_password'])) {
-        if (!isset($_SESSION['register_customer_id'])) {
-            $error = 'Session expired. Please start over.';
-        } else {
-            $password = $_POST['password'];
-            $confirm_password = $_POST['confirm_password'];
+    
+    if (empty($email)) {
+        $errors[] = "Email is required.";
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errors[] = "Please enter a valid email address.";
+    }
+    
+    if (empty($phone)) {
+        $errors[] = "Phone number is required.";
+    } elseif (!preg_match('/^[0-9]{10}$/', $phone)) {
+        $errors[] = "Please enter a valid 10-digit phone number.";
+    }
+    
+    if (empty($password)) {
+        $errors[] = "Password is required.";
+    } elseif (strlen($password) < 6) {
+        $errors[] = "Password must be at least 6 characters long.";
+    }
+    
+    if ($password !== $confirm_password) {
+        $errors[] = "Passwords do not match.";
+    }
+    
+    // Check if email or phone already exists
+    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? OR phone = ?");
+    $stmt->execute([$email, $phone]);
+    if ($stmt->rowCount() > 0) {
+        $errors[] = "Email or phone number is already registered.";
+    }
+    
+    if (empty($errors)) {
+        try {
+            // Generate unique customer code
+            $customer_code = 'CUST' . date('YmdHis') . rand(100, 999);
             
-            if (empty($password) || $password !== $confirm_password) {
-                $error = 'Passwords do not match';
-            } else {
-                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-                $stmt = $pdo->prepare("UPDATE users SET password = ?, phone_verified = 1 WHERE id = ?");
+            // Generate 6-digit OTP
+            $otp = rand(100000, 999999);
+            $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+            
+            // Hash password
+            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            
+            // Insert user with pending status
+            $sql = "INSERT INTO users (email, password, full_name, phone, address, customer_code, 
+                    is_admin, phone_verified, is_active, admin_approved, email_verified, otp, otp_expiry, 
+                    registration_status, created_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, 0, 0, ?, ?, 'pending', NOW())";
+            
+            $stmt = $pdo->prepare($sql);
+            $result = $stmt->execute([
+                $email, $hashed_password, $full_name, $phone, $address, $customer_code,
+                $otp, $otp_expiry
+            ]);
+            
+            if ($result) {
+                $user_id = $pdo->lastInsertId();
                 
-                if ($stmt->execute([$hashed_password, $_SESSION['register_customer_id']])) {
-
-                    // Success message for login page
-                    $_SESSION['registration_success'] = "Registration successful! You can now login.";
-
-                    // Clear registration session
-                    unset($_SESSION['register_customer_id']);
-                    unset($_SESSION['register_customer_code']);
-                    unset($_SESSION['register_customer_name']);
-
-                    // 🔥 Fixed Redirect (PHP header + JS fallback)
-                    header("Location: login.php"); 
-                    echo '<script>window.location.href = "login.php";</script>';
-                    exit();
-                } else {
-                    $error = 'Registration failed. Please try again.';
-                }
+                // Store user info in session for OTP verification
+                $_SESSION['temp_user_id'] = $user_id;
+                $_SESSION['temp_email'] = $email;
+                $_SESSION['temp_otp'] = $otp;
+                
+                // For demo purposes, we'll simulate sending OTP
+                // In production, you would send actual email here
+                
+                // Create admin notification for new registration
+                $admin_message = "New customer registration: " . $full_name . 
+                               " (" . $email . ") - Please review and approve.";
+                
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
+                                      SELECT id, 'New Registration', ?, 'registration', NOW() 
+                                      FROM users WHERE is_admin = TRUE");
+                $stmt->execute([$admin_message]);
+                
+                // Redirect to OTP verification
+                header("Location: verify_otp.php?email=" . urlencode($email));
+                exit();
+                
+            } else {
+                $error = "Registration failed. Please try again.";
             }
+            
+        } catch (Exception $e) {
+            $error = "Database error: " . $e->getMessage();
         }
+    } else {
+        $error = implode("<br>", $errors);
     }
-}
-
-// Handle restart
-if (isset($_GET['restart'])) {
-    unset($_SESSION['register_customer_id']);
-    unset($_SESSION['register_customer_code']);
-    unset($_SESSION['register_customer_name']);
-    header("Location: register.php");
-    exit();
 }
 ?>
 
@@ -88,78 +122,119 @@ if (isset($_GET['restart'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Customer Registration - BillPay Pro</title>
+    <title>Register - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        html, body {
-            height: 100%;
+        .register-container {
+            max-width: 500px;
+            margin: 2rem auto;
+            padding: 0 1rem;
         }
         
-        body {
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
+        .register-header {
+            text-align: center;
+            margin-bottom: 2rem;
         }
         
-        .container {
-            flex: 1;
-        }
-        
-        .footer {
-            margin-top: auto;
-        }
-
-        .password-container {
-            position: relative;
-        }
-        
-        .password-container .form-control {
-            padding-right: 45px;
-            height: 48px;
-            padding: 0.75rem;
-            line-height: normal;
-            box-sizing: border-box;
-        }
-        
-        .toggle-password {
-            position: absolute;
-            right: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: transparent !important;
-            border: none;
-            cursor: pointer;
-            color: #666;
-            padding: 4px;
-            width: 24px;
-            height: 24px;
+        .register-icon {
+            width: 80px;
+            height: 80px;
+            background: #075B5E;
+            color: white;
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            border-radius: 2px;
-            margin: 0;
-            outline: none;
+            font-size: 2rem;
+            margin: 0 auto 1rem;
         }
         
-        .toggle-password:hover {
-            background: #f8f9fa !important;
+        .registration-steps {
+            display: flex;
+            justify-content: space-between;
+            margin: 2rem 0;
+            position: relative;
         }
         
-        .toggle-password .lucide-icon {
-            width: 1.2rem;
-            height: 1.2rem;
-            margin: 0;
+        .registration-steps::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            left: 10%;
+            right: 10%;
+            height: 2px;
+            background: #e9ecef;
+            z-index: 1;
         }
         
-        .form-group {
-            margin-bottom: 1rem;
+        .step {
+            text-align: center;
+            position: relative;
+            z-index: 2;
+            flex: 1;
         }
         
-        .form-group label {
-            display: block;
+        .step-number {
+            width: 40px;
+            height: 40px;
+            background: #e9ecef;
+            color: #666;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 0.5rem;
+            font-weight: bold;
+        }
+        
+        .step.active .step-number {
+            background: #075B5E;
+            color: white;
+        }
+        
+        .step-label {
+            font-size: 0.85rem;
+            color: #666;
+        }
+        
+        .form-note {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 5px;
+            margin: 1rem 0;
+            font-size: 0.9rem;
+        }
+        
+        .password-requirements {
+            background: #f0f7f7;
+            padding: 1rem;
+            border-radius: 5px;
+            margin: 1rem 0;
+            border-left: 4px solid #075B5E;
+        }
+        
+        .requirement {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
             margin-bottom: 0.5rem;
-            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        
+        .requirement.met {
+            color: #27ae60;
+        }
+        
+        .requirement.unmet {
+            color: #666;
+        }
+        
+        .login-prompt {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e9ecef;
         }
     </style>
 </head>
@@ -177,79 +252,160 @@ if (isset($_GET['restart'])) {
     </header>
 
     <div class="container">
-        <div class="card" style="max-width: 500px; margin: 2rem auto;">
-            <h2 style="text-align: center;">Customer Registration</h2>
+        <div class="register-container">
+            <!-- Registration Header -->
+            <div class="register-header">
+                <div class="register-icon">
+                    <i data-lucide="user-plus"></i>
+                </div>
+                <h1>Create Account</h1>
+                <p>Register to manage your bills and payments</p>
+            </div>
             
+            <!-- Registration Steps -->
+            <div class="registration-steps">
+                <div class="step active">
+                    <div class="step-number">1</div>
+                    <div class="step-label">Register</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-label">Verify OTP</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-label">Admin Approval</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-label">Complete</div>
+                </div>
+            </div>
+            
+            <!-- Messages -->
             <?php if ($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
+                <div class="alert alert-danger">
+                    <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <?php echo $error; ?>
+                </div>
             <?php endif; ?>
             
             <?php if ($success): ?>
-                <div class="alert alert-success"><?php echo $success; ?></div>
-            <?php endif; ?>
-
-            <?php if (!isset($_SESSION['register_customer_id'])): ?>
-                <form method="POST" action="">
-                    <div class="form-group">
-                        <label for="customer_code">Customer Code *</label>
-                        <input type="text" id="customer_code" name="customer_code" class="form-control" 
-                               value="<?php echo isset($_POST['customer_code']) ? htmlspecialchars($_POST['customer_code']) : ''; ?>" 
-                               placeholder="Enter customer code from admin" required
-                               style="font-family: monospace; font-size: 1.1rem;">
-                        <small style="color: #666;">Get your customer code from the administrator</small>
-                    </div>
-                    
-                    <button type="submit" name="verify_code" class="btn" style="width: 100%;">Verify Code</button>
-                </form>
-            <?php else: ?>
-                <div style="background: #f8f9fa; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;">
-                    <strong>Welcome:</strong> <?php echo $_SESSION['register_customer_name']; ?><br>
-                    <strong>Code:</strong> <?php echo $_SESSION['register_customer_code']; ?>
-                </div>
-                
-                <form method="POST" action="" id="registrationForm">
-                    <div class="form-group">
-                        <label for="password">Password *</label>
-                        <div class="password-container">
-                            <input type="password" id="password" name="password" class="form-control" required>
-                            <button type="button" class="toggle-password" onclick="togglePassword('password')" aria-label="Toggle password visibility">
-                                <i data-lucide="eye" class="lucide-icon" id="password-icon"></i>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="confirm_password">Confirm Password *</label>
-                        <div class="password-container">
-                            <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
-                            <button type="button" class="toggle-password" onclick="togglePassword('confirm_password')" aria-label="Toggle password visibility">
-                                <i data-lucide="eye" class="lucide-icon" id="confirm-password-icon"></i>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <button type="submit" name="set_password" class="btn" style="width: 100%; background: #27ae60;">
-                        Complete Registration
-                    </button>
-                </form>
-                
-                <div style="text-align: center; margin-top: 1rem;">
-                    <a href="?restart=1" style="color: #e74c3c;">
-                        <i data-lucide="refresh-cw" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>
-                        Start Over
-                    </a>
+                <div class="alert alert-success">
+                    <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <?php echo $success; ?>
                 </div>
             <?php endif; ?>
             
-            <p style="text-align: center; margin-top: 1rem;">
-                Already registered? <a href="login.php">Login here</a>
-            </p>
+            <!-- Registration Form -->
+            <form method="POST" action="" class="register-form" id="registerForm">
+                <div class="form-group">
+                    <label for="full_name">
+                        <i data-lucide="user" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Full Name *
+                    </label>
+                    <input type="text" id="full_name" name="full_name" class="form-control" 
+                           value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>" 
+                           required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="email">
+                        <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Email Address *
+                    </label>
+                    <input type="email" id="email" name="email" class="form-control" 
+                           value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
+                           required>
+                    <small class="form-note">We'll send a verification OTP to this email</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="phone">
+                        <i data-lucide="phone" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Phone Number *
+                    </label>
+                    <input type="tel" id="phone" name="phone" class="form-control" 
+                           value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>" 
+                           pattern="[0-9]{10}" placeholder="98XXXXXXXX" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="address">
+                        <i data-lucide="map-pin" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Address
+                    </label>
+                    <textarea id="address" name="address" class="form-control" rows="3"><?php echo isset($_POST['address']) ? htmlspecialchars($_POST['address']) : ''; ?></textarea>
+                </div>
+                
+                <div class="password-requirements">
+                    <strong>Password Requirements:</strong>
+                    <div class="requirement" id="reqLength">
+                        <i data-lucide="circle" style="width: 1rem; height: 1rem;"></i>
+                        At least 6 characters
+                    </div>
+                    <div class="requirement" id="reqMatch">
+                        <i data-lucide="circle" style="width: 1rem; height: 1rem;"></i>
+                        Passwords match
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">
+                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Password *
+                    </label>
+                    <div style="position: relative;">
+                        <input type="password" id="password" name="password" class="form-control" required>
+                        <button type="button" onclick="togglePassword('password')" 
+                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); 
+                                       background: none; border: none; cursor: pointer;">
+                            <i data-lucide="eye" style="width: 1.2rem; height: 1.2rem;"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirm_password">
+                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Confirm Password *
+                    </label>
+                    <div style="position: relative;">
+                        <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
+                        <button type="button" onclick="togglePassword('confirm_password')" 
+                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); 
+                                       background: none; border: none; cursor: pointer;">
+                            <i data-lucide="eye" style="width: 1.2rem; height: 1.2rem;"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="form-note">
+                    <i data-lucide="info" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <strong>Registration Process:</strong>
+                    <ol style="margin: 0.5rem 0 0 1.5rem; font-size: 0.9rem;">
+                        <li>Complete this registration form</li>
+                        <li>Verify your email with OTP</li>
+                        <li>Wait for admin approval (you'll be notified)</li>
+                        <li>Login and access your account</li>
+                    </ol>
+                </div>
+                
+                <button type="submit" class="btn" style="width: 100%; margin-top: 1.5rem;">
+                    <i data-lucide="user-plus" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>
+                    Register Account
+                </button>
+            </form>
+            
+            <div class="login-prompt">
+                <p>Already have an account? <a href="login.php">Login here</a></p>
+            </div>
         </div>
     </div>
 
     <footer class="footer">
         <div class="container">
-            <p>&copy; <?php echo date('Y'); ?> Online Billing System - BCA Project | Tribhuvan University</p>
+            <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
         </div>
     </footer>
 
@@ -257,18 +413,77 @@ if (isset($_GET['restart'])) {
         lucide.createIcons();
         
         function togglePassword(fieldId) {
-            const passwordField = document.getElementById(fieldId);
-            const passwordIcon = document.getElementById(fieldId + '-icon');
+            const field = document.getElementById(fieldId);
+            const icon = field.nextElementSibling.querySelector('i');
             
-            if (passwordField.type === 'password') {
-                passwordField.type = 'text';
-                passwordIcon.setAttribute('data-lucide', 'eye-off');
+            if (field.type === 'password') {
+                field.type = 'text';
+                icon.setAttribute('data-lucide', 'eye-off');
             } else {
-                passwordField.type = 'password';
-                passwordIcon.setAttribute('data-lucide', 'eye');
+                field.type = 'password';
+                icon.setAttribute('data-lucide', 'eye');
             }
             lucide.createIcons();
         }
+        
+        // Real-time password validation
+        document.getElementById('password').addEventListener('input', validatePassword);
+        document.getElementById('confirm_password').addEventListener('input', validatePassword);
+        
+        function validatePassword() {
+            const password = document.getElementById('password').value;
+            const confirm = document.getElementById('confirm_password').value;
+            
+            // Check length
+            const lengthReq = document.getElementById('reqLength');
+            const lengthIcon = lengthReq.querySelector('i');
+            if (password.length >= 6) {
+                lengthReq.className = 'requirement met';
+                lengthIcon.setAttribute('data-lucide', 'check-circle');
+            } else {
+                lengthReq.className = 'requirement unmet';
+                lengthIcon.setAttribute('data-lucide', 'circle');
+            }
+            
+            // Check match
+            const matchReq = document.getElementById('reqMatch');
+            const matchIcon = matchReq.querySelector('i');
+            if (confirm && password === confirm) {
+                matchReq.className = 'requirement met';
+                matchIcon.setAttribute('data-lucide', 'check-circle');
+            } else if (confirm) {
+                matchReq.className = 'requirement unmet';
+                matchIcon.setAttribute('data-lucide', 'x-circle');
+            } else {
+                matchReq.className = 'requirement unmet';
+                matchIcon.setAttribute('data-lucide', 'circle');
+            }
+            
+            lucide.createIcons();
+        }
+        
+        // Form submission validation
+        document.getElementById('registerForm').addEventListener('submit', function(e) {
+            const password = document.getElementById('password').value;
+            const confirm = document.getElementById('confirm_password').value;
+            
+            if (password.length < 6) {
+                e.preventDefault();
+                alert('Password must be at least 6 characters long.');
+                return false;
+            }
+            
+            if (password !== confirm) {
+                e.preventDefault();
+                alert('Passwords do not match.');
+                return false;
+            }
+            
+            return true;
+        });
+        
+        // Initialize validation
+        validatePassword();
     </script>
 </body>
 </html>
