@@ -1,4 +1,5 @@
 <?php
+// resend_otp.php
 session_start();
 
 define('BASE_PATH', dirname(dirname(__FILE__)));
@@ -39,7 +40,16 @@ if ($update_result) {
     $email_sent = sendOTPEmail($user['email'], $user['full_name'], $new_otp);
     
     if ($email_sent) {
-        echo json_encode(['success' => true, 'message' => 'OTP resent successfully.']);
+        // If in debug mode, include the OTP in response
+        $response = ['success' => true, 'message' => 'OTP resent successfully.'];
+        
+        if (defined('EMAIL_DEBUG') && EMAIL_DEBUG && isset($_SESSION['ajax_otp_response'])) {
+            $response['debug_otp'] = $_SESSION['ajax_otp_response']['otp'];
+            $response['debug_message'] = 'Debug mode: OTP = ' . $_SESSION['ajax_otp_response']['otp'];
+            unset($_SESSION['ajax_otp_response']);
+        }
+        
+        echo json_encode($response);
     } else {
         echo json_encode(['success' => false, 'message' => 'Failed to send email.']);
     }

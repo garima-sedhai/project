@@ -2,7 +2,8 @@
 session_start();
 
 // Set base path
-define('BASE_PATH', dirname(dirname(dirname(__FILE__))));
+// Set base path
+define('BASE_PATH', dirname(dirname(__FILE__))); // ONE less dirname()
 require_once BASE_PATH . '/includes/config.php';
 require_once BASE_PATH . '/includes/db_connection.php';
 require_once BASE_PATH . '/includes/email_functions.php';

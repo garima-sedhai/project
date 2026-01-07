@@ -4,11 +4,11 @@ $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
 session_start();
 require_once $base_path . '/includes/db_connection.php';
+require_once $base_path . '/includes/email_functions.php'; // Make sure this is included
 
-// Check if user is in OTP verification process
-if (!isset($_SESSION['temp_user_id'])) {
-    header("Location: register.php");
-    exit();
+// Display debug OTPs if in debug mode
+if (defined('EMAIL_DEBUG') && EMAIL_DEBUG) {
+    displayDebugOTPs();
 }
 
 $user_id = $_SESSION['temp_user_id'];

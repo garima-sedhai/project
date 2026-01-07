@@ -1,6 +1,6 @@
 <?php
 // For admin files:
-$base_path = dirname(dirname(__DIR__));
+$base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
 session_start();
 require_once $base_path . '/includes/db_connection.php';
@@ -24,31 +24,48 @@ $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM services");
 $stmt->execute();
 $stats['total_services'] = $stmt->fetch()['count'];
 
-// Get total invoices
-$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM invoices");
-$stmt->execute();
-$stats['total_invoices'] = $stmt->fetch()['count'];
+// Get total invoices (check if table exists first)
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM invoices");
+    $stmt->execute();
+    $stats['total_invoices'] = $stmt->fetch()['count'] ?? 0;
+} catch (Exception $e) {
+    $stats['total_invoices'] = 0;
+}
 
-// Get pending payments (invoices with status 'pending' or 'due')
-$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM invoices WHERE payment_status IN ('pending', 'due')");
-$stmt->execute();
-$stats['pending_payments'] = $stmt->fetch()['count'];
+// Get pending payments (check if table exists first)
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM invoices WHERE payment_status IN ('pending', 'due')");
+    $stmt->execute();
+    $stats['pending_payments'] = $stmt->fetch()['count'] ?? 0;
+} catch (Exception $e) {
+    $stats['pending_payments'] = 0;
+}
 
-// Get total revenue
-$stmt = $pdo->prepare("SELECT SUM(amount) as total FROM invoices WHERE payment_status = 'paid'");
-$stmt->execute();
-$stats['total_revenue'] = $stmt->fetch()['total'] ?? 0;
+// Get total revenue (check if table exists first)
+try {
+    $stmt = $pdo->prepare("SELECT SUM(amount) as total FROM invoices WHERE payment_status = 'paid'");
+    $stmt->execute();
+    $stats['total_revenue'] = $stmt->fetch()['total'] ?? 0;
+} catch (Exception $e) {
+    $stats['total_revenue'] = 0;
+}
 
-// Get recent invoices
-$stmt = $pdo->prepare("
-    SELECT i.*, u.full_name 
-    FROM invoices i 
-    JOIN users u ON i.user_id = u.id 
-    ORDER BY i.created_at DESC 
-    LIMIT 5
-");
-$stmt->execute();
-$recent_invoices = $stmt->fetchAll();
+// Get recent invoices (check if table exists first)
+$recent_invoices = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT i.*, u.full_name 
+        FROM invoices i 
+        JOIN users u ON i.user_id = u.id 
+        ORDER BY i.created_at DESC 
+        LIMIT 5
+    ");
+    $stmt->execute();
+    $recent_invoices = $stmt->fetchAll();
+} catch (Exception $e) {
+    $recent_invoices = [];
+}
 
 // Get pending approvals count
 $stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE is_admin = FALSE AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'");
@@ -72,7 +89,7 @@ $new_notifications_count = $stmt->fetch()['new_notifications'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Dashboard - Online Service Billing System</title>
-    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="<?php echo $base_path; ?>/assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         .dashboard-container {
@@ -297,7 +314,7 @@ $new_notifications_count = $stmt->fetch()['new_notifications'];
     </style>
 </head>
 <body>
-    <?php include '../includes/header.php'; ?>
+    <?php include $base_path . '/includes/header.php'; ?>
     
     <div class="dashboard-container">
         <!-- Welcome Section -->
@@ -450,7 +467,7 @@ $new_notifications_count = $stmt->fetch()['new_notifications'];
         </div>
     </div>
     
-    <?php include '../includes/footer.php'; ?>
+    <?php include $base_path . '/includes/footer.php'; ?>
     
     <script>
         // Initialize Lucide icons

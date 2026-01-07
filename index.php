@@ -1,5 +1,8 @@
 <?php
-session_start();
+// Only start session if we need it
+if (isset($_GET['session_needed'])) {
+    session_start();
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">

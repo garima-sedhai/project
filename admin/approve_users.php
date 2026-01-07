@@ -1,6 +1,6 @@
 <?php
 // For admin files:
-$base_path = dirname(dirname(__DIR__));
+$base_path = dirname(__DIR__); // CHANGE THIS LINE
 require_once $base_path . '/includes/config.php';
 session_start();
 require_once $base_path . '/includes/db_connection.php';
