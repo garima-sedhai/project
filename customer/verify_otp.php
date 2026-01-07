@@ -2,82 +2,165 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
+// session_start(); // REMOVED
 require_once $base_path . '/includes/db_connection.php';
-require_once $base_path . '/includes/email_functions.php'; // Make sure this is included
-
+require_once $base_path . '/includes/email_functions.php';
 // Display debug OTPs if in debug mode
 if (defined('EMAIL_DEBUG') && EMAIL_DEBUG) {
-    displayDebugOTPs();
+    // You can implement displayDebugOTPs() function if needed
 }
 
-$user_id = $_SESSION['temp_user_id'];
+$user_id = $_SESSION['temp_user_id'] ?? null;
 $email = $_SESSION['temp_email'] ?? '';
 $error = '';
 
+// Redirect if no user in session
+if (!$user_id) {
+    header("Location: register.php");
+    exit;
+}
+
 // Handle OTP verification
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $entered_otp = trim($_POST['otp']);
+    $entered_otp = trim($_POST['otp'] ?? '');
     
     if (empty($entered_otp)) {
         $error = "Please enter the OTP";
     } else {
-        // Get stored OTP from database
-        $stmt = $pdo->prepare("SELECT otp, otp_expiry FROM users WHERE id = ?");
-        $stmt->execute([$user_id]);
-        $user_data = $stmt->fetch();
-        
-        if ($user_data) {
-            $stored_otp = $user_data['otp'];
-            $otp_expiry = $user_data['otp_expiry'];
+        try {
+            // Check OTP in verification_otps table first
+            $stmt = $pdo->prepare("
+                SELECT * FROM verification_otps 
+                WHERE email = ? 
+                AND otp = ? 
+                AND type = 'registration' 
+                AND is_used = 0 
+                AND expires_at > NOW()
+                ORDER BY created_at DESC 
+                LIMIT 1
+            ");
             
-            // Check if OTP is expired
-            if (strtotime($otp_expiry) < time()) {
-                $error = "OTP has expired. Please request a new one.";
-            } elseif ($entered_otp == $stored_otp) {
-                // OTP is correct - update user status
-                try {
-                    $stmt = $pdo->prepare("UPDATE users SET email_verified = 1, otp = NULL, otp_expiry = NULL, 
-                                          registration_status = 'verified', updated_at = NOW() WHERE id = ?");
-                    $stmt->execute([$user_id]);
-                    
-                    // Clear temp session
-                    unset($_SESSION['temp_user_id']);
-                    unset($_SESSION['temp_email']);
-                    unset($_SESSION['temp_full_name']);
-                    
-                    // Show success message
-                    $_SESSION['registration_success'] = "Email verified successfully! Your account is pending admin approval. You will be notified once approved.";
-                    
-                    header("Location: login.php");
-                    exit();
-                    
-                } catch (Exception $e) {
-                    $error = "Error updating verification status: " . $e->getMessage();
-                }
+            $stmt->execute([$email, $entered_otp]);
+            $otp_record = $stmt->fetch();
+            
+            if ($otp_record) {
+                // Mark OTP as used in verification_otps table
+                $stmt = $pdo->prepare("UPDATE verification_otps SET is_used = 1 WHERE id = ?");
+                $stmt->execute([$otp_record['id']]);
+                
+                // Update user as verified
+                $stmt = $pdo->prepare("
+                    UPDATE users 
+                    SET email_verified = 1, 
+                        registration_status = 'verified', 
+                        updated_at = NOW() 
+                    WHERE id = ?
+                ");
+                $stmt->execute([$user_id]);
+                
+                // Clear temp session
+                unset($_SESSION['temp_user_id']);
+                unset($_SESSION['temp_email']);
+                unset($_SESSION['temp_full_name']);
+                
+                // Show success message
+                $_SESSION['registration_success'] = "Email verified successfully! Your account is pending admin approval. You will be notified once approved.";
+                
+                header("Location: login.php");
+                exit();
+                
             } else {
-                $error = "Invalid OTP. Please try again.";
+                // Fallback: Check OTP in users table (if columns exist)
+                try {
+                    $stmt = $pdo->prepare("SELECT otp, otp_expiry FROM users WHERE id = ?");
+                    $stmt->execute([$user_id]);
+                    $user_data = $stmt->fetch();
+                    
+                    if ($user_data && isset($user_data['otp']) && isset($user_data['otp_expiry'])) {
+                        $stored_otp = $user_data['otp'];
+                        $otp_expiry = $user_data['otp_expiry'];
+                        
+                        // Check if OTP is expired
+                        if (strtotime($otp_expiry) < time()) {
+                            $error = "OTP has expired. Please request a new one.";
+                        } elseif ($entered_otp == $stored_otp) {
+                            // OTP is correct - update user status
+                            $stmt = $pdo->prepare("
+                                UPDATE users 
+                                SET email_verified = 1, 
+                                    otp = NULL, 
+                                    otp_expiry = NULL, 
+                                    registration_status = 'verified', 
+                                    updated_at = NOW() 
+                                WHERE id = ?
+                            ");
+                            $stmt->execute([$user_id]);
+                            
+                            // Clear temp session
+                            unset($_SESSION['temp_user_id']);
+                            unset($_SESSION['temp_email']);
+                            unset($_SESSION['temp_full_name']);
+                            
+                            // Show success message
+                            $_SESSION['registration_success'] = "Email verified successfully! Your account is pending admin approval. You will be notified once approved.";
+                            
+                            header("Location: login.php");
+                            exit();
+                        } else {
+                            $error = "Invalid OTP. Please try again.";
+                        }
+                    } else {
+                        $error = "Invalid OTP. Please try again or request a new OTP.";
+                    }
+                } catch (Exception $e) {
+                    $error = "OTP verification error. Please try again.";
+                }
             }
-        } else {
-            $error = "User not found. Please register again.";
-            unset($_SESSION['temp_user_id']);
-            unset($_SESSION['temp_email']);
-            unset($_SESSION['temp_full_name']);
+            
+        } catch (Exception $e) {
+            $error = "Error updating verification status: " . $e->getMessage();
         }
     }
 }
 
 // Check if OTP has expired on page load
-$stmt = $pdo->prepare("SELECT otp_expiry FROM users WHERE id = ?");
-$stmt->execute([$user_id]);
-$user = $stmt->fetch();
-
-if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
-    $error = "OTP has expired. Please register again.";
-    // Clear invalid session
-    unset($_SESSION['temp_user_id']);
-    unset($_SESSION['temp_email']);
-    unset($_SESSION['temp_full_name']);
+try {
+    // Check in verification_otps table
+    $stmt = $pdo->prepare("
+        SELECT expires_at FROM verification_otps 
+        WHERE email = ? 
+        AND type = 'registration' 
+        AND is_used = 0 
+        ORDER BY created_at DESC 
+        LIMIT 1
+    ");
+    $stmt->execute([$email]);
+    $otp_data = $stmt->fetch();
+    
+    if ($otp_data && $otp_data['expires_at'] && strtotime($otp_data['expires_at']) < time()) {
+        $error = "OTP has expired. Please register again.";
+        // Clear invalid session
+        unset($_SESSION['temp_user_id']);
+        unset($_SESSION['temp_email']);
+        unset($_SESSION['temp_full_name']);
+    }
+} catch (Exception $e) {
+    // If verification_otps table doesn't exist or has error, check users table
+    try {
+        $stmt = $pdo->prepare("SELECT otp_expiry FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch();
+        
+        if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
+            $error = "OTP has expired. Please register again.";
+            // Clear invalid session
+            unset($_SESSION['temp_user_id']);
+            unset($_SESSION['temp_email']);
+            unset($_SESSION['temp_full_name']);
+        }
+    } catch (Exception $e2) {
+        // Ignore error if columns don't exist
+    }
 }
 ?>
 
@@ -174,6 +257,18 @@ if ($user && $user['otp_expiry'] && strtotime($user['otp_expiry']) < time()) {
             color: #999;
             cursor: not-allowed;
             text-decoration: none;
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
     </style>
 </head>

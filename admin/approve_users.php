@@ -1,23 +1,23 @@
 <?php
 // For admin files:
-$base_path = dirname(__DIR__); // CHANGE THIS LINE
+$base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
 require_once $base_path . '/includes/db_connection.php';
+require_once $base_path . '/includes/email_functions.php'; // Include email functions
 
 // Redirect if not admin
-if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_admin']) || !$_SESSION['is_admin']) {
     header("Location: ../customer/login.php");
     exit;
 }
 
 // Get pending approvals count for the badge
-$stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE is_admin = FALSE AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'");
+$stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE user_type = 'customer' AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending'");
 $stmt->execute();
 $pending_approvals_count = $stmt->fetch()['pending_approvals'];
 
 // Get ONLY users pending approval
-$stmt = $pdo->prepare("SELECT * FROM users WHERE is_admin = FALSE AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified' ORDER BY created_at DESC");
+$stmt = $pdo->prepare("SELECT * FROM users WHERE user_type = 'customer' AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending' ORDER BY created_at DESC");
 $stmt->execute();
 $pending_users = $stmt->fetchAll();
 
@@ -32,7 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$user_id]);
                 $user = $stmt->fetch();
                 
-                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
+                // Update user status
+                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, approved_by_admin = 1, account_status = 'active', registration_status = 'approved', updated_at = NOW() WHERE id = ?");
                 $stmt->execute([$user_id]);
                 
                 // Send approval email
@@ -40,14 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sendApprovalEmail($user['email'], $user['full_name']);
                 }
                 
-                // Create notification for user
-                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Approved', 'Your account has been approved by the administrator. You can now access all features.', 'account', NOW())");
-                $stmt->execute([$user_id]);
-                
                 $approved_count++;
             }
             
             $_SESSION['success_message'] = "Approved $approved_count user(s) successfully! Emails have been sent to approved users.";
+            header("Location: approve_users.php");
+            exit;
         }
     }
     
@@ -60,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$user_id]);
                 $user = $stmt->fetch();
                 
-                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', updated_at = NOW() WHERE id = ?");
+                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', account_status = 'inactive', updated_at = NOW() WHERE id = ?");
                 $stmt->execute([$user_id]);
                 
                 // Send rejection email
@@ -68,14 +67,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     sendRejectionEmail($user['email'], $user['full_name']);
                 }
                 
-                // Create notification for user
-                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Rejected', 'Your account registration has been rejected by the administrator. Please contact support for more information.', 'account', NOW())");
-                $stmt->execute([$user_id]);
-                
                 $rejected_count++;
             }
             
             $_SESSION['success_message'] = "Rejected $rejected_count user(s) successfully!";
+            header("Location: approve_users.php");
+            exit;
         }
     }
     
@@ -87,17 +84,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$user_id]);
         $user = $stmt->fetch();
         
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
+        // Update multiple status fields
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, approved_by_admin = 1, account_status = 'active', registration_status = 'approved', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
         
         // Send approval email
         if ($user) {
             sendApprovalEmail($user['email'], $user['full_name']);
         }
-        
-        // Create notification for user
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Approved', 'Your account has been approved by the administrator. You can now access all features.', 'account', NOW())");
-        $stmt->execute([$user_id]);
         
         $_SESSION['success_message'] = "User approved successfully! Approval email has been sent.";
         header("Location: approve_users.php");
@@ -112,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$user_id]);
         $user = $stmt->fetch();
         
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', updated_at = NOW() WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', account_status = 'inactive', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
         
         // Send rejection email
@@ -120,18 +114,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             sendRejectionEmail($user['email'], $user['full_name']);
         }
         
-        // Create notification for user
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Rejected', 'Your account registration has been rejected by the administrator. Please contact support for more information.', 'account', NOW())");
-        $stmt->execute([$user_id]);
-        
         $_SESSION['success_message'] = "User rejected successfully!";
         header("Location: approve_users.php");
         exit;
     }
-    
-    // Refresh page to show updated list
-    header("Location: approve_users.php");
-    exit;
 }
 ?>
 
@@ -140,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Approve Users - Online Service Billing System</title>
+    <title>Approve Users - BillPay Pro</title>
     <link rel="stylesheet" href="../assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -275,6 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             overflow: hidden;
             transition: transform 0.2s;
+            position: relative;
         }
         
         .user-card:hover {
@@ -384,10 +371,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             z-index: 10;
         }
         
-        .user-card {
-            position: relative;
-        }
-        
         .registration-time {
             font-size: 0.85rem;
             color: #666;
@@ -408,6 +391,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-top: 10px;
             font-size: 0.85rem;
             border-left: 3px solid #075B5E;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-verified {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
         }
     </style>
 </head>
@@ -499,9 +500,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <p>
                                         <i data-lucide="phone" class="status-icon"></i>
                                         <strong>Phone:</strong> <?php echo htmlspecialchars($customer['phone'] ?? 'Not provided'); ?>
-                                        <?php if ($customer['phone_verified']): ?>
-                                            <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                        <?php endif; ?>
                                     </p>
                                     <p>
                                         <i data-lucide="home" class="status-icon"></i>
@@ -509,16 +507,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     </p>
                                     <p>
                                         <i data-lucide="mail-check" class="status-icon"></i>
-                                        <strong>Email:</strong> 
-                                        <span style="color: #27ae60;">Verified</span>
-                                        <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
+                                        <strong>Email Status:</strong> 
+                                        <span class="status-badge status-verified">Verified</span>
                                     </p>
                                     <p>
                                         <i data-lucide="shield" class="status-icon"></i>
-                                        <strong>Status:</strong> 
-                                        <span style="color: #f39c12; font-weight: 500;">
-                                            <i data-lucide="clock" style="width: 1rem; height: 1rem; color: #f39c12; margin-right: 0.3rem; vertical-align: middle;"></i>
-                                            Awaiting Admin Approval
+                                        <strong>Account Status:</strong> 
+                                        <span class="status-badge status-pending">
+                                            <i data-lucide="clock" style="width: 1rem; height: 1rem; margin-right: 0.3rem; vertical-align: middle;"></i>
+                                            Awaiting Approval
                                         </span>
                                     </p>
                                     
@@ -533,20 +530,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
                                     <button type="submit" name="approve_user" class="btn btn-success">
-                                        <i data-lucide="check"></i> Approve
+                                        <i data-lucide="check"></i> Approve & Email
                                     </button>
                                 </form>
                                 
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
-                                    <button type="submit" name="reject_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to reject this user?')">
-                                        <i data-lucide="x"></i> Reject
+                                    <button type="submit" name="reject_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to reject this user? A rejection email will be sent.')">
+                                        <i data-lucide="x"></i> Reject & Email
                                     </button>
                                 </form>
-                                
-                                <a href="view_user_details.php?id=<?php echo $customer['id']; ?>" class="btn btn-secondary">
-                                    <i data-lucide="eye"></i> View Details
-                                </a>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -579,18 +572,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             const userCount = checkboxes.length;
             const actionText = action === 'approve' ? 'approve' : 'reject';
-            const emailNote = action === 'approve' ? '\n\nApproval emails will be sent to all selected users.' : '';
+            const emailNote = action === 'approve' ? '\n\nApproval emails will be sent to all selected users.' : '\n\nRejection emails will be sent to all selected users.';
             return confirm(`Are you sure you want to ${actionText} ${userCount} user(s)?${emailNote}`);
         }
-        
-        // Auto-refresh the page every 30 seconds to check for new pending approvals
-        setTimeout(function() {
-            const checkboxes = document.querySelectorAll('input[name="selected_users[]"]:checked');
-            // Only refresh if no users are selected (to avoid interrupting bulk actions)
-            if (checkboxes.length === 0) {
-                location.reload();
-            }
-        }, 30000); // 30 seconds
     </script>
 </body>
 </html>

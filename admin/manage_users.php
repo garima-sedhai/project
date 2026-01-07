@@ -1,15 +1,12 @@
 <?php
-session_start();
-
-// Set base path
-// Set base path
-define('BASE_PATH', dirname(dirname(__FILE__))); // ONE less dirname()
-require_once BASE_PATH . '/includes/config.php';
-require_once BASE_PATH . '/includes/db_connection.php';
-require_once BASE_PATH . '/includes/email_functions.php';
+// For admin files:
+$base_path = dirname(__DIR__);
+require_once $base_path . '/includes/config.php';
+require_once $base_path . '/includes/db_connection.php';
+require_once $base_path . '/includes/email_functions.php';
 
 // Redirect if not admin
-if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_admin']) || !$_SESSION['is_admin']) {
     header("Location: ../customer/login.php");
     exit;
 }
@@ -19,7 +16,7 @@ $search = $_GET['search'] ?? '';
 $status_filter = $_GET['status'] ?? 'all';
 
 // Base query
-$query = "SELECT * FROM users WHERE is_admin = FALSE";
+$query = "SELECT * FROM users WHERE user_type = 'customer'";
 $params = [];
 
 // Apply search filter
@@ -31,15 +28,15 @@ if (!empty($search)) {
 
 // Apply status filter
 if ($status_filter === 'pending') {
-    $query .= " AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'";
+    $query .= " AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending'";
 } elseif ($status_filter === 'approved') {
-    $query .= " AND admin_approved = 1";
+    $query .= " AND admin_approved = 1 AND account_status = 'active'";
 } elseif ($status_filter === 'rejected') {
     $query .= " AND registration_status = 'rejected'";
 } elseif ($status_filter === 'unverified') {
     $query .= " AND (email_verified = 0 OR registration_status = 'pending')";
 } elseif ($status_filter === 'verified') {
-    $query .= " AND email_verified = 1 AND admin_approved = 0 AND registration_status = 'verified'";
+    $query .= " AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending'";
 }
 
 $query .= " ORDER BY created_at DESC";
@@ -48,6 +45,11 @@ $query .= " ORDER BY created_at DESC";
 $stmt = $pdo->prepare($query);
 $stmt->execute($params);
 $users = $stmt->fetchAll();
+
+// Get pending approvals count for badge
+$stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE user_type = 'customer' AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending'");
+$stmt->execute();
+$pending_approvals_count = $stmt->fetch()['pending_approvals'];
 
 // Handle user actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -59,17 +61,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$user_id]);
         $user = $stmt->fetch();
         
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
+        // Update user status
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, approved_by_admin = 1, account_status = 'active', registration_status = 'approved', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
         
         // Send approval email
         if ($user) {
             sendApprovalEmail($user['email'], $user['full_name']);
         }
-        
-        // Create notification for user
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Approved', 'Your account has been approved by the administrator. You can now access all features.', 'account', NOW())");
-        $stmt->execute([$user_id]);
         
         $_SESSION['success_message'] = "User approved successfully! Approval email has been sent.";
         header("Location: manage_users.php");
@@ -84,17 +83,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$user_id]);
         $user = $stmt->fetch();
         
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', updated_at = NOW() WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', account_status = 'inactive', updated_at = NOW() WHERE id = ?");
         $stmt->execute([$user_id]);
         
         // Send rejection email
         if ($user) {
             sendRejectionEmail($user['email'], $user['full_name']);
         }
-        
-        // Create notification for user
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) VALUES (?, 'Account Rejected', 'Your account registration has been rejected by the administrator. Please contact support for more information.', 'account', NOW())");
-        $stmt->execute([$user_id]);
         
         $_SESSION['success_message'] = "User rejected successfully!";
         header("Location: manage_users.php");
@@ -104,18 +99,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['delete_user'])) {
         $user_id = $_POST['user_id'];
         
-        // Check if user has any invoices before deleting
-        $stmt = $pdo->prepare("SELECT COUNT(*) as invoice_count FROM invoices WHERE user_id = ?");
-        $stmt->execute([$user_id]);
-        $invoice_count = $stmt->fetch()['invoice_count'];
-        
-        if ($invoice_count > 0) {
-            $_SESSION['error_message'] = "Cannot delete user with existing invoices. Please delete the invoices first or mark the user as inactive.";
-        } else {
-            $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+        // Check if user has any bills before deleting
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) as bill_count FROM bills WHERE user_id = ?");
             $stmt->execute([$user_id]);
-            $_SESSION['success_message'] = "User deleted successfully!";
+            $bill_count = $stmt->fetch()['bill_count'];
+            
+            if ($bill_count > 0) {
+                $_SESSION['error_message'] = "Cannot delete user with existing bills. Please mark the user as inactive instead.";
+            } else {
+                $stmt = $pdo->prepare("UPDATE users SET is_active = 0, account_status = 'inactive', updated_at = NOW() WHERE id = ?");
+                $stmt->execute([$user_id]);
+                $_SESSION['success_message'] = "User marked as inactive successfully!";
+            }
+        } catch (Exception $e) {
+            // If bills table doesn't exist, just update user status
+            $stmt = $pdo->prepare("UPDATE users SET is_active = 0, account_status = 'inactive', updated_at = NOW() WHERE id = ?");
+            $stmt->execute([$user_id]);
+            $_SESSION['success_message'] = "User marked as inactive successfully!";
         }
+        
         header("Location: manage_users.php");
         exit;
     }
@@ -159,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manage Users - Online Service Billing System</title>
+    <title>Manage Users - BillPay Pro</title>
     <link rel="stylesheet" href="../assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -181,6 +184,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .header-section h1 {
             margin: 0;
             color: #075B5E;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .pending-badge {
+            background: #e74c3c;
+            color: white;
+            border-radius: 20px;
+            padding: 5px 15px;
+            font-size: 0.9rem;
+            font-weight: bold;
         }
         
         .back-btn {
@@ -382,6 +397,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             text-align: center;
             padding: 40px 20px;
             color: #666;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         
         .status-badge {
@@ -419,6 +437,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #004085;
         }
         
+        .status-inactive {
+            background: #f8f9fa;
+            color: #6c757d;
+        }
+        
+        .status-active {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
         .message {
             padding: 15px;
             border-radius: 5px;
@@ -443,18 +471,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border: 1px solid #bee5eb;
         }
         
-        .otp-info {
-            background: #f8f9fa;
-            border-left: 4px solid #075B5E;
-            padding: 10px 15px;
-            margin: 10px 0;
-            font-size: 0.9rem;
-        }
-        
-        .otp-info strong {
-            color: #075B5E;
-        }
-        
         .email-notice {
             background: #f0f7f7;
             padding: 8px 12px;
@@ -463,6 +479,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-top: 5px;
             border-left: 3px solid #075B5E;
         }
+        
+        .registration-time {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .time-icon {
+            width: 0.9rem;
+            height: 0.9rem;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
@@ -470,7 +499,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     <div class="manage-container">
         <div class="header-section">
-            <h1>Manage Users</h1>
+            <h1>
+                <i data-lucide="users"></i>
+                Manage Users
+                <?php if ($pending_approvals_count > 0): ?>
+                    <span class="pending-badge"><?php echo $pending_approvals_count; ?> Pending</span>
+                <?php endif; ?>
+            </h1>
             <a href="index.php" class="back-btn">
                 <i data-lucide="arrow-left"></i> Back to Dashboard
             </a>
@@ -504,7 +539,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <select id="status" name="status" class="form-control">
                         <option value="all" <?php echo $status_filter === 'all' ? 'selected' : ''; ?>>All Users</option>
                         <option value="pending" <?php echo $status_filter === 'pending' ? 'selected' : ''; ?>>Pending Approval</option>
-                        <option value="approved" <?php echo $status_filter === 'approved' ? 'selected' : ''; ?>>Approved</option>
+                        <option value="approved" <?php echo $status_filter === 'approved' ? 'selected' : ''; ?>>Approved (Active)</option>
                         <option value="rejected" <?php echo $status_filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
                         <option value="unverified" <?php echo $status_filter === 'unverified' ? 'selected' : ''; ?>>Unverified</option>
                         <option value="verified" <?php echo $status_filter === 'verified' ? 'selected' : ''; ?>>Verified (Pending Admin)</option>
@@ -544,6 +579,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <div class="user-info">
                                 <h3 class="user-name"><?php echo htmlspecialchars($customer['full_name']); ?></h3>
                                 <p class="user-email"><?php echo htmlspecialchars($customer['email']); ?></p>
+                                <p class="registration-time">
+                                    <i data-lucide="clock" class="time-icon"></i>
+                                    Registered: <?php echo date('M d, Y h:i A', strtotime($customer['created_at'])); ?>
+                                </p>
                             </div>
                         </div>
                         
@@ -552,9 +591,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <p>
                                     <i data-lucide="phone" class="status-icon"></i>
                                     <strong>Phone:</strong> <?php echo htmlspecialchars($customer['phone'] ?? 'Not provided'); ?>
-                                    <?php if ($customer['phone_verified']): ?>
-                                        <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                    <?php endif; ?>
                                 </p>
                                 <p>
                                     <i data-lucide="home" class="status-icon"></i>
@@ -565,86 +601,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <strong>Registered:</strong> <?php echo date('M d, Y', strtotime($customer['created_at'])); ?>
                                 </p>
                                 <p>
-                                    <i data-lucide="user-check" class="status-icon"></i>
-                                    <strong>Approval Status:</strong> 
-                                    <?php if ($customer['admin_approved']): ?>
-                                        <i data-lucide="check-circle" style="width: 1rem; height: 1rem; color: #27ae60; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                        <span style="color: #27ae60;">Approved</span>
-                                    <?php elseif ($customer['email_verified'] && $customer['registration_status'] == 'verified'): ?>
-                                        <i data-lucide="clock" style="width: 1rem; height: 1rem; color: #f39c12; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                        <span style="color: #f39c12;">Pending Approval</span>
-                                    <?php elseif ($customer['registration_status'] == 'rejected'): ?>
-                                        <i data-lucide="x-circle" style="width: 1rem; height: 1rem; color: #e74c3c; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                        <span style="color: #e74c3c;">Rejected</span>
-                                    <?php else: ?>
-                                        <i data-lucide="alert-circle" style="width: 1rem; height: 1rem; color: #e74c3c; margin-left: 0.3rem; vertical-align: middle;"></i>
-                                        <span style="color: #e74c3c;">Not Verified</span>
-                                    <?php endif; ?>
-                                </p>
-                                <p>
                                     <i data-lucide="mail-check" class="status-icon"></i>
                                     <strong>Email Status:</strong> 
                                     <?php if ($customer['email_verified']): ?>
-                                        <span class="status-badge status-approved">Verified</span>
+                                        <span class="status-badge status-verified">Verified</span>
                                     <?php else: ?>
                                         <span class="status-badge status-unverified">Not Verified</span>
                                     <?php endif; ?>
                                 </p>
                                 <p>
                                     <i data-lucide="shield-check" class="status-icon"></i>
-                                    <strong>Registration Status:</strong> 
-                                    <?php 
-                                    $status_class = '';
-                                    $status_text = ucfirst($customer['registration_status']);
-                                    switch ($customer['registration_status']) {
-                                        case 'approved':
-                                            $status_class = 'status-approved';
-                                            break;
-                                        case 'verified':
-                                            $status_class = 'status-verified';
-                                            break;
-                                        case 'rejected':
-                                            $status_class = 'status-rejected';
-                                            break;
-                                        default:
-                                            $status_class = 'status-pending';
-                                            $status_text = 'Pending';
-                                    }
-                                    ?>
-                                    <span class="status-badge <?php echo $status_class; ?>"><?php echo $status_text; ?></span>
+                                    <strong>Approval Status:</strong> 
+                                    <?php if ($customer['admin_approved']): ?>
+                                        <span class="status-badge status-approved">Approved</span>
+                                    <?php elseif ($customer['email_verified'] && $customer['account_status'] == 'pending'): ?>
+                                        <span class="status-badge status-pending">Pending Approval</span>
+                                    <?php elseif ($customer['registration_status'] == 'rejected'): ?>
+                                        <span class="status-badge status-rejected">Rejected</span>
+                                    <?php else: ?>
+                                        <span class="status-badge status-unverified">Not Verified</span>
+                                    <?php endif; ?>
+                                </p>
+                                <p>
+                                    <i data-lucide="user" class="status-icon"></i>
+                                    <strong>Account Status:</strong> 
+                                    <?php if ($customer['account_status'] == 'active'): ?>
+                                        <span class="status-badge status-active">Active</span>
+                                    <?php elseif ($customer['account_status'] == 'inactive'): ?>
+                                        <span class="status-badge status-inactive">Inactive</span>
+                                    <?php else: ?>
+                                        <span class="status-badge status-pending">Pending</span>
+                                    <?php endif; ?>
                                 </p>
                                 
                                 <!-- Email notification notice for pending approval -->
-                                <?php if ($customer['email_verified'] && $customer['registration_status'] == 'verified' && !$customer['admin_approved']): ?>
+                                <?php if ($customer['email_verified'] && !$customer['admin_approved'] && $customer['account_status'] == 'pending'): ?>
                                     <div class="email-notice">
                                         <i data-lucide="mail" style="width: 0.9rem; height: 0.9rem; margin-right: 0.3rem; vertical-align: middle;"></i>
                                         <small>Approval will send email notification</small>
-                                    </div>
-                                <?php endif; ?>
-                                
-                                <!-- Show OTP info if available -->
-                                <?php if (!empty($customer['otp']) && $customer['otp_expiry'] > date('Y-m-d H:i:s')): ?>
-                                    <div class="otp-info">
-                                        <p><strong>Active OTP:</strong> <?php echo $customer['otp']; ?></p>
-                                        <p><strong>Expires:</strong> <?php echo date('h:i A', strtotime($customer['otp_expiry'])); ?></p>
                                     </div>
                                 <?php endif; ?>
                             </div>
                         </div>
                         
                         <div class="user-actions">
-                            <?php if ($customer['email_verified'] && $customer['registration_status'] == 'verified' && !$customer['admin_approved']): ?>
+                            <?php if ($customer['email_verified'] && !$customer['admin_approved'] && $customer['account_status'] == 'pending'): ?>
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
                                     <button type="submit" name="approve_user" class="btn btn-success">
-                                        <i data-lucide="check"></i> Approve & Email
+                                        <i data-lucide="check"></i> Approve
                                     </button>
                                 </form>
                                 
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
                                     <button type="submit" name="reject_user" class="btn btn-danger">
-                                        <i data-lucide="x"></i> Reject & Email
+                                        <i data-lucide="x"></i> Reject
                                     </button>
                                 </form>
                             <?php endif; ?>
@@ -658,17 +670,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </form>
                             <?php endif; ?>
                             
-                            <?php if ($customer['admin_approved']): ?>
-                                <a href="view_invoices.php?user_id=<?php echo $customer['id']; ?>" class="btn btn-secondary">
-                                    <i data-lucide="file-text"></i> View Invoices
-                                </a>
-                            <?php endif; ?>
-                            
-                            <?php if (!$customer['admin_approved'] && $customer['registration_status'] != 'rejected'): ?>
+                            <?php if ($customer['admin_approved'] && $customer['account_status'] == 'active'): ?>
                                 <form method="POST" style="margin: 0;">
                                     <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
-                                    <button type="submit" name="delete_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this user? This action cannot be undone.')">
-                                        <i data-lucide="trash-2"></i> Delete
+                                    <button type="submit" name="delete_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to mark this user as inactive? The user will no longer be able to login.')">
+                                        <i data-lucide="user-x"></i> Mark Inactive
                                     </button>
                                 </form>
                             <?php endif; ?>
@@ -685,27 +691,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Initialize Lucide icons
         lucide.createIcons();
         
-        // Confirm before deleting user
-        const deleteForms = document.querySelectorAll('form[action*="delete_user"]');
-        deleteForms.forEach(form => {
-            form.addEventListener('submit', function(e) {
-                if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
-                    e.preventDefault();
-                }
-            });
-        });
-        
-        // Confirm before resending verification
-        const resendForms = document.querySelectorAll('form[action*="resend_verification"]');
-        resendForms.forEach(form => {
-            form.addEventListener('submit', function(e) {
-                if (!confirm('Are you sure you want to resend verification email to this user?')) {
-                    e.preventDefault();
-                }
-            });
-        });
-        
-        // Confirm before approving/rejecting
+        // Confirm actions
         const approveForms = document.querySelectorAll('form[action*="approve_user"]');
         approveForms.forEach(form => {
             form.addEventListener('submit', function(e) {
@@ -719,6 +705,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         rejectForms.forEach(form => {
             form.addEventListener('submit', function(e) {
                 if (!confirm('Are you sure you want to reject this user? A rejection email will be sent.')) {
+                    e.preventDefault();
+                }
+            });
+        });
+        
+        const resendForms = document.querySelectorAll('form[action*="resend_verification"]');
+        resendForms.forEach(form => {
+            form.addEventListener('submit', function(e) {
+                if (!confirm('Are you sure you want to resend verification email to this user?')) {
                     e.preventDefault();
                 }
             });

@@ -1,156 +1,193 @@
 <?php
-// Start output buffering
-ob_start();
-
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-
-// Check if we should skip email sending for testing
-$skip_email = isset($_GET['skip_email']) || (defined('EMAIL_DEBUG') && EMAIL_DEBUG);
-
-//session_start();
 require_once $base_path . '/includes/db_connection.php';
+require_once $base_path . '/includes/email_functions.php';
 
-// If already logged in, redirect to dashboard
+$page_title = "Customer Registration";
+$hide_sidebar = true;
+$hide_footer = true;
+
+// Check if user is already logged in
 if (isset($_SESSION['user_id'])) {
     if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) {
-        ob_end_clean();
         header("Location: ../admin/index.php");
+        exit;
     } else {
-        ob_end_clean();
         header("Location: dashboard.php");
+        exit;
     }
-    exit();
 }
 
-$error = '';
-$success = '';
+$errors = [];
+$success = false;
+$form_data = [];
 
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $full_name = trim($_POST['full_name']);
-    $email = trim($_POST['email']);
-    $phone = trim($_POST['phone']);
-    $address = trim($_POST['address']);
-    $password = $_POST['password'];
-    $confirm_password = $_POST['confirm_password'];
+// Generate username from email
+function generate_username($email) {
+    $username = strtok($email, '@');
+    $username = preg_replace('/[^a-zA-Z0-9]/', '', $username);
     
-    // Validate inputs
-    $errors = [];
+    // Check if username already exists and append number if needed
+    global $pdo;
+    $base_username = $username;
+    $counter = 1;
     
-    if (empty($full_name)) {
-        $errors[] = "Full name is required.";
+    while (true) {
+        $stmt = $pdo->prepare("SELECT id FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        
+        if (!$stmt->fetch()) {
+            return $username;
+        }
+        
+        $username = $base_username . $counter;
+        $counter++;
+        
+        if ($counter > 100) {
+            return $base_username . time();
+        }
+    }
+}
+
+// Process registration form
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Sanitize input
+    $form_data = array_map(function($value) {
+        return htmlspecialchars(trim($value), ENT_QUOTES, 'UTF-8');
+    }, $_POST);
+    
+    // Validate required fields
+    $required_fields = ['full_name', 'email', 'phone', 'password', 'confirm_password', 'address'];
+    
+    foreach ($required_fields as $field) {
+        if (empty($form_data[$field])) {
+            $errors[] = ucfirst(str_replace('_', ' ', $field)) . " is required.";
+        }
     }
     
-    if (empty($email)) {
-        $errors[] = "Email is required.";
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    // Validate email
+    if (!empty($form_data['email']) && !filter_var($form_data['email'], FILTER_VALIDATE_EMAIL)) {
         $errors[] = "Please enter a valid email address.";
     }
     
-    if (empty($phone)) {
-        $errors[] = "Phone number is required.";
-    } elseif (!preg_match('/^[0-9]{10}$/', $phone)) {
-        $errors[] = "Please enter a valid 10-digit phone number.";
+    // Check if email already exists
+    if (empty($errors) && !empty($form_data['email'])) {
+        try {
+            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? AND is_deleted = 0");
+            $stmt->execute([$form_data['email']]);
+            if ($stmt->fetch()) {
+                $errors[] = "This email is already registered. Please use a different email or try to login.";
+            }
+        } catch (PDOException $e) {
+            $errors[] = "Database error: " . $e->getMessage();
+        }
     }
     
-    if (empty($password)) {
-        $errors[] = "Password is required.";
-    } elseif (strlen($password) < 6) {
-        $errors[] = "Password must be at least 6 characters long.";
+    // Validate password
+    if (!empty($form_data['password']) && !empty($form_data['confirm_password'])) {
+        if (strlen($form_data['password']) < 6) {
+            $errors[] = "Password must be at least 6 characters long.";
+        }
+        
+        if ($form_data['password'] !== $form_data['confirm_password']) {
+            $errors[] = "Passwords do not match.";
+        }
     }
     
-    if ($password !== $confirm_password) {
-        $errors[] = "Passwords do not match.";
+    // Validate terms agreement
+    if (!isset($form_data['terms'])) {
+        $errors[] = "You must agree to the Terms and Conditions.";
     }
     
-    // Check if email or phone already exists
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? OR phone = ?");
-    $stmt->execute([$email, $phone]);
-    if ($stmt->rowCount() > 0) {
-        $errors[] = "Email or phone number is already registered.";
-    }
-    
+    // If no errors, proceed with registration
     if (empty($errors)) {
         try {
-            // Generate unique customer code
-            $customer_code = 'CUST' . date('YmdHis') . rand(100, 999);
+            // Start transaction
+            $pdo->beginTransaction();
             
-            // Generate 6-digit OTP
+            // Generate username from email
+            $username = generate_username($form_data['email']);
+            
+            // Hash password
+            $hashed_password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+            
+            // Generate OTP
             $otp = rand(100000, 999999);
             $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
             
-            // Hash password
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            // Insert user data with ONLY columns that exist in your table
+            $stmt = $pdo->prepare("
+                INSERT INTO users (
+                    username, full_name, email, password, phone, address, 
+                    user_type, account_status, email_verified, 
+                    approved_by_admin, admin_approved, registration_status,
+                    is_admin, is_active, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'customer', 
+                         'pending', 0, 0, 0, 'pending', 0, 1, NOW())
+            ");
             
-            // Insert user with pending status
-            $sql = "INSERT INTO users (email, password, full_name, phone, address, customer_code, 
-                    is_admin, phone_verified, is_active, admin_approved, email_verified, otp, otp_expiry, 
-                    registration_status, created_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, 0, 0, ?, ?, 'pending', NOW())";
-            
-            $stmt = $pdo->prepare($sql);
-            $result = $stmt->execute([
-                $email, $hashed_password, $full_name, $phone, $address, $customer_code,
-                $otp, $otp_expiry
+            $stmt->execute([
+                $username,
+                $form_data['full_name'],
+                $form_data['email'],
+                $hashed_password,
+                $form_data['phone'],
+                $form_data['address']
             ]);
             
-            if ($result) {
-                $user_id = $pdo->lastInsertId();
-                
-                // Store user info in session for OTP verification
-                $_SESSION['temp_user_id'] = $user_id;
-                $_SESSION['temp_email'] = $email;
-                $_SESSION['temp_full_name'] = $full_name;
-                
-                // Send actual OTP email
-                require_once $base_path . '/includes/email_functions.php';
-                $email_sent = sendOTPEmail($email, $full_name, $otp);
-                
-                if ($email_sent) {
-                    // Create admin notification for new registration
-                    $admin_message = "New customer registration: " . $full_name . 
-                                   " (" . $email . ") - Please review and approve.";
-                    
-                    $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
-                                          SELECT id, 'New Registration', ?, 'registration', NOW() 
-                                          FROM users WHERE is_admin = TRUE");
-                    $stmt->execute([$admin_message]);
-                    
-                    // Redirect to OTP verification
-                    header("Location: verify_otp.php?email=" . urlencode($email));
-                    exit();
-                } else {
-                    $error = "Failed to send OTP email. Please try again or contact support.";
-                    // Delete the user record since email failed
-                    $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$user_id]);
-                }
-                
-            } else {
-                $error = "Registration failed. Please try again.";
+            $user_id = $pdo->lastInsertId();
+            
+            // Also store in verification_otps table for backup
+            $stmt = $pdo->prepare("
+                INSERT INTO verification_otps (email, otp, type, expires_at) 
+                VALUES (?, ?, 'registration', ?)
+            ");
+            $stmt->execute([$form_data['email'], $otp, $otp_expiry]);
+            
+            // Send OTP email using your existing function
+            $email_sent = sendOTPEmail($form_data['email'], $form_data['full_name'], $otp);
+            
+            if (!$email_sent) {
+                throw new Exception("Failed to send OTP email. Please try again.");
             }
             
+            // Commit transaction
+            $pdo->commit();
+            
+            // Store in session for OTP verification
+            $_SESSION['temp_user_id'] = $user_id;
+            $_SESSION['temp_email'] = $form_data['email'];
+            $_SESSION['temp_full_name'] = $form_data['full_name'];
+            
+            // Redirect to OTP verification
+            header("Location: verify_otp.php");
+            exit();
+            
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = "Registration failed: " . $e->getMessage();
+            error_log("Registration error: " . $e->getMessage());
         } catch (Exception $e) {
-            $error = "Database error: " . $e->getMessage();
+            $pdo->rollBack();
+            $errors[] = $e->getMessage();
+            error_log("Registration error: " . $e->getMessage());
         }
-    } else {
-        $error = implode("<br>", $errors);
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register - BillPay Pro</title>
+    <title>Customer Registration - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
         .register-container {
-            max-width: 500px;
+            max-width: 800px;
             margin: 2rem auto;
             padding: 0 1rem;
         }
@@ -160,113 +197,162 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             margin-bottom: 2rem;
         }
         
-        .register-icon {
-            width: 80px;
-            height: 80px;
+        .register-header h1 {
+            color: #075B5E;
+            margin-bottom: 0.5rem;
+        }
+        
+        .register-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .card-header {
             background: #075B5E;
             color: white;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 2rem;
-            margin: 0 auto 1rem;
-        }
-        
-        .registration-steps {
-            display: flex;
-            justify-content: space-between;
-            margin: 2rem 0;
-            position: relative;
-        }
-        
-        .registration-steps::before {
-            content: '';
-            position: absolute;
-            top: 20px;
-            left: 10%;
-            right: 10%;
-            height: 2px;
-            background: #e9ecef;
-            z-index: 1;
-        }
-        
-        .step {
+            padding: 1.5rem;
             text-align: center;
-            position: relative;
-            z-index: 2;
-            flex: 1;
         }
         
-        .step-number {
-            width: 40px;
-            height: 40px;
-            background: #e9ecef;
-            color: #666;
-            border-radius: 50%;
+        .card-body {
+            padding: 2rem;
+        }
+        
+        .form-row {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 0.5rem;
-            font-weight: bold;
+            gap: 1rem;
+            margin-bottom: 1rem;
         }
         
-        .step.active .step-number {
+        .form-group {
+            flex: 1;
+            margin-bottom: 1rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .form-control {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+        
+        .form-control:focus {
+            border-color: #075B5E;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(7, 91, 94, 0.1);
+        }
+        
+        .required::after {
+            content: " *";
+            color: #e74c3c;
+        }
+        
+        .btn {
             background: #075B5E;
             color: white;
-        }
-        
-        .step-label {
-            font-size: 0.85rem;
-            color: #666;
-        }
-        
-        .form-note {
-            background: #f8f9fa;
-            padding: 1rem;
+            border: none;
+            padding: 1rem 2rem;
             border-radius: 5px;
-            margin: 1rem 0;
-            font-size: 0.9rem;
-        }
-        
-        .password-requirements {
-            background: #f0f7f7;
-            padding: 1rem;
-            border-radius: 5px;
-            margin: 1rem 0;
-            border-left: 4px solid #075B5E;
-        }
-        
-        .requirement {
-            display: flex;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            margin-bottom: 0.5rem;
-            font-size: 0.9rem;
         }
         
-        .requirement.met {
-            color: #27ae60;
+        .btn:hover {
+            background: #0a7c80;
         }
         
-        .requirement.unmet {
+        .btn-block {
+            width: 100%;
+            justify-content: center;
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .registration-process {
+            background: #f0f7f7;
+            padding: 1.5rem;
+            border-radius: 5px;
+            margin-top: 2rem;
+        }
+        
+        .process-steps {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .process-steps li {
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        
+        .process-steps li i {
+            color: #075B5E;
+            margin-top: 0.25rem;
+        }
+        
+        .login-link {
+            text-align: center;
+            margin-top: 1rem;
             color: #666;
         }
         
-        .login-prompt {
-            text-align: center;
-            margin-top: 2rem;
-            padding-top: 1rem;
-            border-top: 1px solid #e9ecef;
+        .login-link a {
+            color: #075B5E;
+            text-decoration: none;
+            font-weight: 500;
         }
         
-        .email-note {
-            background: #e7f4f4;
-            padding: 1rem;
-            border-radius: 5px;
-            margin: 1rem 0;
-            border-left: 4px solid #075B5E;
-            font-size: 0.9rem;
+        .login-link a:hover {
+            text-decoration: underline;
+        }
+        
+        .terms-checkbox {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            margin: 1.5rem 0;
+        }
+        
+        .terms-checkbox input[type="checkbox"] {
+            margin-top: 0.25rem;
+        }
+        
+        .terms-checkbox label {
+            margin: 0;
         }
     </style>
 </head>
@@ -285,158 +371,130 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
     <div class="container">
         <div class="register-container">
-            <!-- Registration Header -->
+            <!-- Header -->
             <div class="register-header">
-                <div class="register-icon">
-                    <i data-lucide="user-plus"></i>
-                </div>
-                <h1>Create Account</h1>
-                <p>Register to manage your bills and payments</p>
-            </div>
-            
-            <!-- Registration Steps -->
-            <div class="registration-steps">
-                <div class="step active">
-                    <div class="step-number">1</div>
-                    <div class="step-label">Register</div>
-                </div>
-                <div class="step">
-                    <div class="step-number">2</div>
-                    <div class="step-label">Verify OTP</div>
-                </div>
-                <div class="step">
-                    <div class="step-number">3</div>
-                    <div class="step-label">Admin Approval</div>
-                </div>
-                <div class="step">
-                    <div class="step-number">4</div>
-                    <div class="step-label">Complete</div>
-                </div>
+                <h1><i data-lucide="user-plus"></i> Customer Registration</h1>
+                <p>Create your account to start using BillPay Pro</p>
             </div>
             
             <!-- Messages -->
-            <?php if ($error): ?>
+            <?php if (!empty($errors)): ?>
                 <div class="alert alert-danger">
                     <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                    <?php echo $error; ?>
+                    <strong>Please fix the following errors:</strong>
+                    <ul style="margin: 0.5rem 0 0 1.5rem;">
+                        <?php foreach ($errors as $error): ?>
+                            <li><?php echo $error; ?></li>
+                        <?php endforeach; ?>
+                    </ul>
                 </div>
             <?php endif; ?>
             
             <?php if ($success): ?>
                 <div class="alert alert-success">
                     <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                    <?php echo $success; ?>
+                    <strong>Registration Successful!</strong>
+                    <p>Your account has been created. Please check your email for the OTP to verify your account.</p>
                 </div>
             <?php endif; ?>
             
-            <!-- Email Note -->
-            <div class="email-note">
-                <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                <strong>Important:</strong> A verification OTP will be sent to your email. Please check your inbox (and spam folder) after registration.
+            <!-- Registration Form -->
+            <div class="register-card">
+                <div class="card-header">
+                    <h2 style="margin: 0;">Create Your Account</h2>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="full_name" class="required">Full Name</label>
+                                <input type="text" class="form-control" id="full_name" name="full_name" 
+                                       value="<?php echo $form_data['full_name'] ?? ''; ?>" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="email" class="required">Email Address</label>
+                                <input type="email" class="form-control" id="email" name="email" 
+                                       value="<?php echo $form_data['email'] ?? ''; ?>" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="phone" class="required">Phone Number</label>
+                                <input type="tel" class="form-control" id="phone" name="phone" 
+                                       value="<?php echo $form_data['phone'] ?? ''; ?>" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="password" class="required">Password</label>
+                                <input type="password" class="form-control" id="password" name="password" required>
+                                <small style="color: #666;">Minimum 6 characters</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="confirm_password" class="required">Confirm Password</label>
+                                <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="address" class="required">Address</label>
+                            <textarea class="form-control" id="address" name="address" rows="2" required><?php echo $form_data['address'] ?? ''; ?></textarea>
+                        </div>
+                        
+                        <div class="terms-checkbox">
+                            <input type="checkbox" id="terms" name="terms" required>
+                            <label for="terms">
+                                I agree to the <a href="<?php echo SITE_URL; ?>terms.php" target="_blank">Terms and Conditions</a> and 
+                                <a href="<?php echo SITE_URL; ?>privacy.php" target="_blank">Privacy Policy</a>
+                            </label>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-block">
+                            <i data-lucide="user-plus"></i> Create Account
+                        </button>
+                    </form>
+                    
+                    <div class="login-link">
+                        <p>Already have an account? <a href="login.php">Login here</a></p>
+                    </div>
+                </div>
             </div>
             
-            <!-- Registration Form -->
-            <form method="POST" action="" class="register-form" id="registerForm">
-                <div class="form-group">
-                    <label for="full_name">
-                        <i data-lucide="user" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Full Name *
-                    </label>
-                    <input type="text" id="full_name" name="full_name" class="form-control" 
-                           value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>" 
-                           required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="email">
-                        <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Email Address *
-                    </label>
-                    <input type="email" id="email" name="email" class="form-control" 
-                           value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
-                           required>
-                    <small class="form-note">We'll send a verification OTP to this email</small>
-                </div>
-                
-                <div class="form-group">
-                    <label for="phone">
-                        <i data-lucide="phone" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Phone Number *
-                    </label>
-                    <input type="tel" id="phone" name="phone" class="form-control" 
-                           value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>" 
-                           pattern="[0-9]{10}" placeholder="98XXXXXXXX" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="address">
-                        <i data-lucide="map-pin" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Address
-                    </label>
-                    <textarea id="address" name="address" class="form-control" rows="3"><?php echo isset($_POST['address']) ? htmlspecialchars($_POST['address']) : ''; ?></textarea>
-                </div>
-                
-                <div class="password-requirements">
-                    <strong>Password Requirements:</strong>
-                    <div class="requirement" id="reqLength">
-                        <i data-lucide="circle" style="width: 1rem; height: 1rem;"></i>
-                        At least 6 characters
-                    </div>
-                    <div class="requirement" id="reqMatch">
-                        <i data-lucide="circle" style="width: 1rem; height: 1rem;"></i>
-                        Passwords match
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label for="password">
-                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Password *
-                    </label>
-                    <div style="position: relative;">
-                        <input type="password" id="password" name="password" class="form-control" required>
-                        <button type="button" onclick="togglePassword('password')" 
-                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); 
-                                       background: none; border: none; cursor: pointer;">
-                            <i data-lucide="eye" style="width: 1.2rem; height: 1.2rem;"></i>
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label for="confirm_password">
-                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Confirm Password *
-                    </label>
-                    <div style="position: relative;">
-                        <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
-                        <button type="button" onclick="togglePassword('confirm_password')" 
-                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); 
-                                       background: none; border: none; cursor: pointer;">
-                            <i data-lucide="eye" style="width: 1.2rem; height: 1.2rem;"></i>
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="form-note">
-                    <i data-lucide="info" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                    <strong>Registration Process:</strong>
-                    <ol style="margin: 0.5rem 0 0 1.5rem; font-size: 0.9rem;">
-                        <li>Complete this registration form</li>
-                        <li>Verify your email with OTP (sent to your email)</li>
-                        <li>Wait for admin approval (you'll be notified)</li>
-                        <li>Login and access your account</li>
-                    </ol>
-                </div>
-                
-                <button type="submit" class="btn" style="width: 100%; margin-top: 1.5rem;">
-                    <i data-lucide="user-plus" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>
-                    Register Account
-                </button>
-            </form>
-            
-            <div class="login-prompt">
-                <p>Already have an account? <a href="login.php">Login here</a></p>
+            <!-- Registration Process Info -->
+            <div class="registration-process">
+                <h3><i data-lucide="info"></i> Registration Process</h3>
+                <ul class="process-steps">
+                    <li>
+                        <i data-lucide="check-circle"></i>
+                        <div>
+                            <strong>Step 1: Fill Registration Form</strong>
+                            <p>Provide your details in the form above</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="mail"></i>
+                        <div>
+                            <strong>Step 2: Verify Email</strong>
+                            <p>Check your email for OTP and verify your account</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="shield-check"></i>
+                        <div>
+                            <strong>Step 3: Admin Approval</strong>
+                            <p>Wait for admin to approve your account (usually within 24 hours)</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="log-in"></i>
+                        <div>
+                            <strong>Step 4: Login & Access</strong>
+                            <p>Once approved, login and access your dashboard</p>
+                        </div>
+                    </li>
+                </ul>
             </div>
         </div>
     </div>
@@ -450,78 +508,56 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     <script>
         lucide.createIcons();
         
-        function togglePassword(fieldId) {
-            const field = document.getElementById(fieldId);
-            const icon = field.nextElementSibling.querySelector('i');
-            
-            if (field.type === 'password') {
-                field.type = 'text';
-                icon.setAttribute('data-lucide', 'eye-off');
-            } else {
-                field.type = 'password';
-                icon.setAttribute('data-lucide', 'eye');
-            }
-            lucide.createIcons();
-        }
+        // Password strength indicator
+        const passwordInput = document.getElementById('password');
+        const confirmPasswordInput = document.getElementById('confirm_password');
         
-        // Real-time password validation
-        document.getElementById('password').addEventListener('input', validatePassword);
-        document.getElementById('confirm_password').addEventListener('input', validatePassword);
+        passwordInput.addEventListener('input', function() {
+            const password = this.value;
+            const confirmPassword = confirmPasswordInput.value;
+            
+            // Check if passwords match
+            if (confirmPassword && password !== confirmPassword) {
+                confirmPasswordInput.style.borderColor = '#e74c3c';
+            } else if (confirmPassword) {
+                confirmPasswordInput.style.borderColor = '#27ae60';
+            }
+        });
         
-        function validatePassword() {
-            const password = document.getElementById('password').value;
-            const confirm = document.getElementById('confirm_password').value;
+        confirmPasswordInput.addEventListener('input', function() {
+            const password = passwordInput.value;
+            const confirmPassword = this.value;
             
-            // Check length
-            const lengthReq = document.getElementById('reqLength');
-            const lengthIcon = lengthReq.querySelector('i');
-            if (password.length >= 6) {
-                lengthReq.className = 'requirement met';
-                lengthIcon.setAttribute('data-lucide', 'check-circle');
+            if (password && confirmPassword && password !== confirmPassword) {
+                this.style.borderColor = '#e74c3c';
+            } else if (password && confirmPassword) {
+                this.style.borderColor = '#27ae60';
             } else {
-                lengthReq.className = 'requirement unmet';
-                lengthIcon.setAttribute('data-lucide', 'circle');
+                this.style.borderColor = '#ddd';
             }
-            
-            // Check match
-            const matchReq = document.getElementById('reqMatch');
-            const matchIcon = matchReq.querySelector('i');
-            if (confirm && password === confirm) {
-                matchReq.className = 'requirement met';
-                matchIcon.setAttribute('data-lucide', 'check-circle');
-            } else if (confirm) {
-                matchReq.className = 'requirement unmet';
-                matchIcon.setAttribute('data-lucide', 'x-circle');
-            } else {
-                matchReq.className = 'requirement unmet';
-                matchIcon.setAttribute('data-lucide', 'circle');
-            }
-            
-            lucide.createIcons();
-        }
+        });
         
         // Form submission validation
-        document.getElementById('registerForm').addEventListener('submit', function(e) {
-            const password = document.getElementById('password').value;
-            const confirm = document.getElementById('confirm_password').value;
+        document.querySelector('form').addEventListener('submit', function(e) {
+            const password = passwordInput.value;
+            const confirmPassword = confirmPasswordInput.value;
             
             if (password.length < 6) {
                 e.preventDefault();
                 alert('Password must be at least 6 characters long.');
+                passwordInput.focus();
                 return false;
             }
             
-            if (password !== confirm) {
+            if (password !== confirmPassword) {
                 e.preventDefault();
-                alert('Passwords do not match.');
+                alert('Passwords do not match. Please check and try again.');
+                confirmPasswordInput.focus();
                 return false;
             }
             
             return true;
         });
-        
-        // Initialize validation
-        validatePassword();
     </script>
 </body>
 </html>

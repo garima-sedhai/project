@@ -1,6 +1,6 @@
 <?php
 // resend_otp.php
-session_start();
+// session_start(); // REMOVED - Already started in config.php
 
 define('BASE_PATH', dirname(dirname(__FILE__)));
 require_once BASE_PATH . '/includes/config.php';
