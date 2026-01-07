@@ -2,85 +2,138 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
+// REMOVE THIS LINE: session_start(); // config.php already starts session
 require_once $base_path . '/includes/db_connection.php';
 
-// Redirect if not logged in as customer
-if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
+// Redirect if not logged in
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit();
+}
+// ... rest of your dashboard.php code
+
+$user_id = $_SESSION['user_id'];
+
+// Get user details including approval status directly from database
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+$stmt->execute([$user_id]);
+$user = $stmt->fetch();
+
+// Check if user exists
+if (!$user) {
+    // User not found in database
+    session_destroy();
+    $_SESSION['logout_message'] = "User account not found. Please register again.";
     header("Location: login.php");
     exit();
 }
 
-// Check if customer account is approved
-if (!isset($_SESSION['admin_approved']) || !$_SESSION['admin_approved']) {
-    if (isset($_SESSION['email_verified']) && $_SESSION['email_verified'] && 
-        isset($_SESSION['registration_status']) && $_SESSION['registration_status'] == 'verified') {
-        header("Location: pending_approval.php");
-    } else {
-        header("Location: login.php");
-    }
+// Check if user is admin trying to access customer dashboard
+if ($user['is_admin']) {
+    header("Location: ../admin/index.php");
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+// Check if email is verified
+if (!$user['email_verified']) {
+    // Email not verified - redirect to verification page or show message
+    $_SESSION['verification_email'] = $user['email'];
+    header("Location: verify_email.php");
+    exit();
+}
 
-// Update login count and get user statistics
+// Check if admin has approved
+if (!$user['admin_approved'] || $user['registration_status'] != 'approved') {
+    // Not approved by admin - redirect to pending approval page
+    header("Location: pending_approval.php");
+    exit();
+}
+
+// Check if account is active
+if (isset($user['is_active']) && !$user['is_active']) {
+    // Account deactivated
+    $_SESSION['logout_message'] = "Your account has been deactivated. Please contact support.";
+    session_destroy();
+    header("Location: login.php");
+    exit();
+}
+
+// Update login count and last login
 $stmt = $pdo->prepare("UPDATE users SET login_count = COALESCE(login_count, 0) + 1, last_login = NOW() WHERE id = ?");
 $stmt->execute([$user_id]);
 
-// Get user details including login count
+// Get updated user details including login count
 $stmt = $pdo->prepare("SELECT *, COALESCE(login_count, 0) as login_count FROM users WHERE id = ?");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch();
 
 // Determine welcome message based on login count
 if ($user['login_count'] <= 1) {
-    $welcome_message = "Welcome to BillPay Pro, " . $_SESSION['full_name'] . "!";
+    $welcome_message = "Welcome to BillPay Pro, " . htmlspecialchars($user['full_name']) . "!";
     $welcome_subtitle = "We're excited to have you onboard. Let's get started with your billing dashboard.";
 } else {
-    $welcome_message = "Welcome back, " . $_SESSION['full_name'] . "!";
+    $welcome_message = "Welcome back, " . htmlspecialchars($user['full_name']) . "!";
     $welcome_subtitle = "Here's your billing overview and quick actions";
 }
 
-// Get user statistics - USING INVOICES TABLE (not bills)
-// Total pending invoices
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0) as total_amount 
-                       FROM invoices WHERE user_id = ? AND payment_status IN ('pending', 'due')");
-$stmt->execute([$user_id]);
-$pending_stats = $stmt->fetch();
+// Get user statistics - Check if invoices table exists
+try {
+    // Total pending invoices
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(total_amount), 0) as total_amount 
+                           FROM invoices WHERE user_id = ? AND payment_status IN ('pending', 'due')");
+    $stmt->execute([$user_id]);
+    $pending_stats = $stmt->fetch();
+} catch (Exception $e) {
+    // If invoices table doesn't exist or has different structure
+    $pending_stats = ['total_pending' => 0, 'total_amount' => 0];
+    error_log("Invoices query error: " . $e->getMessage());
+}
 
-// Total paid invoices
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(amount), 0) as paid_amount 
-                       FROM invoices WHERE user_id = ? AND payment_status = 'paid'");
-$stmt->execute([$user_id]);
-$paid_stats = $stmt->fetch();
+try {
+    // Total paid invoices
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(total_amount), 0) as paid_amount 
+                           FROM invoices WHERE user_id = ? AND payment_status = 'paid'");
+    $stmt->execute([$user_id]);
+    $paid_stats = $stmt->fetch();
+} catch (Exception $e) {
+    $paid_stats = ['total_paid' => 0, 'paid_amount' => 0];
+    error_log("Paid invoices query error: " . $e->getMessage());
+}
 
-// Recent invoices (last 5)
-$stmt = $pdo->prepare("SELECT i.*, s.name as service_name 
-                      FROM invoices i 
-                      LEFT JOIN services s ON i.service_id = s.id 
-                      WHERE i.user_id = ? 
-                      ORDER BY i.due_date ASC 
-                      LIMIT 5");
-$stmt->execute([$user_id]);
-$recent_invoices = $stmt->fetchAll();
+try {
+    // Recent invoices (last 5)
+    $stmt = $pdo->prepare("SELECT i.* 
+                          FROM invoices i 
+                          WHERE i.user_id = ? 
+                          ORDER BY i.due_date ASC 
+                          LIMIT 5");
+    $stmt->execute([$user_id]);
+    $recent_invoices = $stmt->fetchAll();
+} catch (Exception $e) {
+    $recent_invoices = [];
+    error_log("Recent invoices query error: " . $e->getMessage());
+}
 
-// Recent payments (last 3)
-$stmt = $pdo->prepare("SELECT p.*, i.invoice_number, s.name as service_name 
-                      FROM payments p 
-                      JOIN invoices i ON p.invoice_id = i.id 
-                      LEFT JOIN services s ON i.service_id = s.id 
-                      WHERE p.user_id = ? 
-                      ORDER BY p.payment_date DESC 
-                      LIMIT 3");
-$stmt->execute([$user_id]);
-$recent_payments = $stmt->fetchAll();
+try {
+    // Recent payments (last 3)
+    $stmt = $pdo->prepare("SELECT p.*, i.invoice_number 
+                          FROM payments p 
+                          JOIN invoices i ON p.invoice_id = i.id 
+                          WHERE p.user_id = ? 
+                          ORDER BY p.payment_date DESC 
+                          LIMIT 3");
+    $stmt->execute([$user_id]);
+    $recent_payments = $stmt->fetchAll();
+} catch (Exception $e) {
+    $recent_payments = [];
+    error_log("Recent payments query error: " . $e->getMessage());
+}
 
 // Check if this is first login (for special first-time message)
 $is_first_login = ($user['login_count'] == 1);
 
 // Get first letters of both first and last names
-$first_name = $_SESSION['full_name'];
+$first_name = $user['full_name'];
 $names = explode(' ', $first_name);
 $initials = '';
 foreach ($names as $n) {
@@ -95,7 +148,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Customer Dashboard - BillPay Pro</title>
-    <link rel="stylesheet" href="../css/style.css">
+    <link rel="stylesheet" href="../assets/css/style.css">
     <!-- Lucide Icons for Profile Sidebar -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
@@ -456,6 +509,55 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         .profile-sidebar::-webkit-scrollbar-thumb:hover {
             background: #a8a8a8;
         }
+        
+        /* Additional styles */
+        .alert {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #075B5E;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        
+        .btn:hover {
+            background: #0a7c80;
+        }
+        
+        .text-center {
+            text-align: center;
+        }
+        
+        .mt-1 {
+            margin-top: 1rem;
+        }
+        
+        .mt-2 {
+            margin-top: 2rem;
+        }
     </style>
 </head>
 <body>
@@ -465,7 +567,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
         <div class="sidebar-header">
             <div class="sidebar-avatar">
                 <?php 
-                $names = explode(' ', $_SESSION['full_name']);
+                $names = explode(' ', $user['full_name']);
                 $initials = '';
                 foreach ($names as $n) {
                     $initials .= strtoupper(substr($n, 0, 1));
@@ -474,7 +576,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 ?>
             </div>
             <div class="sidebar-user-info">
-                <h3><?php echo htmlspecialchars($_SESSION['full_name']); ?></h3>
+                <h3><?php echo htmlspecialchars($user['full_name']); ?></h3>
                 <p>ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
             </div>
             <button class="sidebar-close" onclick="closeProfileSidebar()">
@@ -531,15 +633,22 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
             
             <div class="sidebar-divider"></div>
             
+            <?php
+            // Get unread notification count
+            try {
+                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE");
+                $stmt->execute([$user_id]);
+                $notification_result = $stmt->fetch();
+                $notification_count = $notification_result['count'] ?? 0;
+            } catch (Exception $e) {
+                $notification_count = 0;
+            }
+            ?>
+            
             <a href="notifications.php" class="sidebar-item">
                 <i data-lucide="bell" class="sidebar-icon"></i>
                 Notifications
-                <?php 
-                // Get unread notification count
-                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE");
-                $stmt->execute([$user_id]);
-                $notification_count = $stmt->fetch()['count'];
-                if ($notification_count > 0): ?>
+                <?php if ($notification_count > 0): ?>
                     <span class="notification-badge"><?php echo $notification_count; ?></span>
                 <?php endif; ?>
             </a>
@@ -580,7 +689,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                                 <?php echo $first_letter; ?>
                             </div>
                             <div class="user-name-display">
-                                <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
+                                <span><?php echo htmlspecialchars($user['full_name']); ?></span>
                                 <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
                             </div>
                         </div>
@@ -657,7 +766,7 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                     <table class="table">
                         <thead>
                             <tr>
-                                <th>Service</th>
+                                <th>Invoice #</th>
                                 <th>Amount</th>
                                 <th>Due Date</th>
                                 <th>Status</th>
@@ -666,11 +775,11 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                         <tbody>
                             <?php foreach ($recent_invoices as $invoice): ?>
                                 <tr>
-                                    <td><?php echo $invoice['service_name'] ?? 'General Service'; ?></td>
-                                    <td>₹<?php echo number_format($invoice['amount'], 2); ?></td>
-                                    <td><?php echo date('M d, Y', strtotime($invoice['due_date'])); ?></td>
+                                    <td><?php echo $invoice['invoice_number'] ?? 'N/A'; ?></td>
+                                    <td>₹<?php echo number_format($invoice['total_amount'] ?? $invoice['amount'] ?? 0, 2); ?></td>
+                                    <td><?php echo isset($invoice['due_date']) ? date('M d, Y', strtotime($invoice['due_date'])) : 'N/A'; ?></td>
                                     <td>
-                                        <?php if ($invoice['payment_status'] == 'pending' || $invoice['payment_status'] == 'due'): ?>
+                                        <?php if (($invoice['payment_status'] == 'pending' || $invoice['payment_status'] == 'due')): ?>
                                             <span class="status-pending">Pending</span>
                                         <?php else: ?>
                                             <span class="status-completed">Paid</span>
@@ -696,16 +805,16 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                         <thead>
                             <tr>
                                 <th>Date</th>
-                                <th>Service</th>
+                                <th>Invoice #</th>
                                 <th>Amount</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($recent_payments as $payment): ?>
                                 <tr>
-                                    <td><?php echo date('M d, Y', strtotime($payment['payment_date'])); ?></td>
-                                    <td><?php echo $payment['service_name'] ?? 'General Service'; ?></td>
-                                    <td>₹<?php echo number_format($payment['payment_amount'], 2); ?></td>
+                                    <td><?php echo isset($payment['payment_date']) ? date('M d, Y', strtotime($payment['payment_date'])) : 'N/A'; ?></td>
+                                    <td><?php echo $payment['invoice_number'] ?? 'N/A'; ?></td>
+                                    <td>₹<?php echo number_format($payment['payment_amount'] ?? 0, 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -716,7 +825,6 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 <?php else: ?>
                     <p>No payments yet.</p>
                 <?php endif; ?>
-            </div>
         </div>
     </div>
 
@@ -814,6 +922,21 @@ $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
                 this.style.transform = 'scale(1)';
             });
         }
+        
+        // Auto-check approval status if user was recently approved
+        <?php if ($user['login_count'] == 1): ?>
+        setTimeout(function() {
+            fetch('check_approval_status.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.approved) {
+                        console.log('User is approved - refreshing page');
+                        location.reload();
+                    }
+                })
+                .catch(error => console.error('Error checking approval:', error));
+        }, 10000); // Check after 10 seconds on first login
+        <?php endif; ?>
     </script>
 </body>
 </html>

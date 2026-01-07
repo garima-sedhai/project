@@ -1,123 +1,199 @@
 <?php
-// For admin files:
-$base_path = dirname(__DIR__);
-require_once $base_path . '/includes/config.php';
-require_once $base_path . '/includes/db_connection.php';
-require_once $base_path . '/includes/email_functions.php'; // Include email functions
+session_start();
+require_once '../includes/config.php';
+require_once '../includes/db_connection.php';
+require_once '../includes/email_helper.php'; // Include email helper
 
-// Redirect if not admin
+// Redirect if not logged in as admin
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['is_admin']) || !$_SESSION['is_admin']) {
     header("Location: ../customer/login.php");
-    exit;
+    exit();
 }
 
-// Get pending approvals count for the badge
-$stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE user_type = 'customer' AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending'");
-$stmt->execute();
-$pending_approvals_count = $stmt->fetch()['pending_approvals'];
+$message = '';
+$message_type = '';
 
-// Get ONLY users pending approval
-$stmt = $pdo->prepare("SELECT * FROM users WHERE user_type = 'customer' AND email_verified = 1 AND admin_approved = 0 AND account_status = 'pending' ORDER BY created_at DESC");
-$stmt->execute();
-$pending_users = $stmt->fetchAll();
-
-// Handle bulk actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['approve_selected'])) {
-        if (!empty($_POST['selected_users'])) {
-            $approved_count = 0;
-            foreach ($_POST['selected_users'] as $user_id) {
-                // Get user details before updating
-                $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
-                $stmt->execute([$user_id]);
-                $user = $stmt->fetch();
-                
-                // Update user status
-                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, approved_by_admin = 1, account_status = 'active', registration_status = 'approved', updated_at = NOW() WHERE id = ?");
-                $stmt->execute([$user_id]);
-                
-                // Send approval email
-                if ($user) {
-                    sendApprovalEmail($user['email'], $user['full_name']);
-                }
-                
-                $approved_count++;
-            }
-            
-            $_SESSION['success_message'] = "Approved $approved_count user(s) successfully! Emails have been sent to approved users.";
-            header("Location: approve_users.php");
-            exit;
-        }
-    }
-    
-    if (isset($_POST['reject_selected'])) {
-        if (!empty($_POST['selected_users'])) {
-            $rejected_count = 0;
-            foreach ($_POST['selected_users'] as $user_id) {
-                // Get user details before updating
-                $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
-                $stmt->execute([$user_id]);
-                $user = $stmt->fetch();
-                
-                $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', account_status = 'inactive', updated_at = NOW() WHERE id = ?");
-                $stmt->execute([$user_id]);
-                
-                // Send rejection email
-                if ($user) {
-                    sendRejectionEmail($user['email'], $user['full_name']);
-                }
-                
-                $rejected_count++;
-            }
-            
-            $_SESSION['success_message'] = "Rejected $rejected_count user(s) successfully!";
-            header("Location: approve_users.php");
-            exit;
-        }
-    }
-    
+// Handle user approval
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     if (isset($_POST['approve_user'])) {
         $user_id = $_POST['user_id'];
+        $action = $_POST['action']; // 'approve' or 'reject'
         
-        // Get user details before updating
-        $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
-        $stmt->execute([$user_id]);
-        $user = $stmt->fetch();
-        
-        // Update multiple status fields
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 1, approved_by_admin = 1, account_status = 'active', registration_status = 'approved', updated_at = NOW() WHERE id = ?");
-        $stmt->execute([$user_id]);
-        
-        // Send approval email
-        if ($user) {
-            sendApprovalEmail($user['email'], $user['full_name']);
+        try {
+            if ($action == 'approve') {
+                // Update user status
+                $stmt = $pdo->prepare("UPDATE users SET admin_approved = TRUE, registration_status = 'approved', updated_at = NOW() WHERE id = ?");
+                $stmt->execute([$user_id]);
+                
+                // Get user details for email
+                $stmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
+                $stmt->execute([$user_id]);
+                $user = $stmt->fetch();
+                
+                if ($user) {
+                    // Try sending approval email using PHPMailer helper function
+                    $email_sent = false;
+                    $email_method = '';
+                    
+                    // Method 1: Try main email helper (PHPMailer)
+                    if (function_exists('send_approval_email')) {
+                        if (send_approval_email($user['email'], $user['full_name'])) {
+                            $email_sent = true;
+                            $email_method = 'PHPMailer';
+                        }
+                    }
+                    
+                    // Method 2: Try fallback if main method fails
+                    if (!$email_sent) {
+                        require_once '../includes/email_fallback.php';
+                        $fallback_subject = "Account Approved - BillPay Pro";
+                        $fallback_message = "Dear {$user['full_name']},\n\nYour account has been approved. You can now login at: " . SITE_URL . "customer/login.php\n\nBest regards,\nBillPay Pro Team";
+                        
+                        if (function_exists('send_email_fallback') && send_email_fallback($user['email'], $fallback_subject, $fallback_message, false)) {
+                            $email_sent = true;
+                            $email_method = 'Fallback (mail())';
+                        }
+                    }
+                    
+                    // Method 3: Try direct mail() function as last resort
+                    if (!$email_sent) {
+                        $simple_subject = "Account Approved - BillPay Pro";
+                        $simple_message = "Dear {$user['full_name']},\r\n\r\nYour account has been approved.\r\nYou can now login at: " . SITE_URL . "customer/login.php\r\n\r\nBest regards,\r\nBillPay Pro Team";
+                        $simple_headers = "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">\r\n";
+                        
+                        if (mail($user['email'], $simple_subject, $simple_message, $simple_headers)) {
+                            $email_sent = true;
+                            $email_method = 'Direct mail()';
+                        }
+                    }
+                    
+                    // Create notification for user regardless of email status
+                    $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message, link) VALUES (?, 'approval', 'Registration Approved', 'Your registration has been approved by admin. You can now login.', 'customer/dashboard.php')");
+                    $stmt->execute([$user_id]);
+                    
+                    // Also send notification to all admins
+                    $admin_stmt = $pdo->query("SELECT id FROM users WHERE is_admin = TRUE");
+                    $admins = $admin_stmt->fetchAll();
+                    
+                    foreach ($admins as $admin) {
+                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'system', 'User Approved', ?)");
+                        $stmt->execute([$admin['id'], "User {$user['full_name']} ({$user['email']}) has been approved."]);
+                    }
+                    
+                    if ($email_sent) {
+                        $message = "User approved successfully! Approval email sent via {$email_method} to " . $user['email'];
+                        $message_type = "success";
+                    } else {
+                        $message = "User approved successfully! (Email could not be sent. User has been notified in-system)";
+                        $message_type = "warning";
+                    }
+                }
+                
+            } elseif ($action == 'reject') {
+                // Get user details for notification
+                $stmt = $pdo->prepare("SELECT full_name, email FROM users WHERE id = ?");
+                $stmt->execute([$user_id]);
+                $user = $stmt->fetch();
+                
+                // Update user status to rejected
+                $stmt = $pdo->prepare("UPDATE users SET admin_approved = FALSE, registration_status = 'rejected', is_active = FALSE, updated_at = NOW() WHERE id = ?");
+                $stmt->execute([$user_id]);
+                
+                // Create notification for user
+                if ($user) {
+                    $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'system', 'Registration Rejected', 'Your registration has been rejected by admin. Please contact support for more information.')");
+                    $stmt->execute([$user_id]);
+                    
+                    // Try to send rejection email using multiple methods
+                    $reject_email_sent = false;
+                    
+                    // Try main email helper first
+                    if (function_exists('send_email')) {
+                        $reject_subject = "Registration Rejected - BillPay Pro";
+                        $reject_message = "
+                            <html>
+                            <head>
+                                <style>
+                                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                                    .header { background: #e74c3c; color: white; padding: 20px; text-align: center; }
+                                    .content { background: #f9f9fa; padding: 30px; }
+                                    .footer { background: #f0f0f0; padding: 15px; text-align: center; font-size: 12px; color: #666; }
+                                </style>
+                            </head>
+                            <body>
+                                <div class='container'>
+                                    <div class='header'>
+                                        <h2>Registration Status Update</h2>
+                                    </div>
+                                    <div class='content'>
+                                        <h3>Dear {$user['full_name']},</h3>
+                                        <p>We regret to inform you that your registration with BillPay Pro has been rejected by our administration team.</p>
+                                        <p>If you believe this is an error or would like more information, please contact our support team at " . ADMIN_EMAIL . ".</p>
+                                        <p>Thank you for your interest in BillPay Pro.</p>
+                                        <p style='margin-top: 30px;'>Best regards,<br>
+                                        <strong>BillPay Pro Team</strong></p>
+                                    </div>
+                                    <div class='footer'>
+                                        <p>This is an automated message. Please do not reply to this email.</p>
+                                        <p>&copy; " . date('Y') . " BillPay Pro. All rights reserved.</p>
+                                    </div>
+                                </div>
+                            </body>
+                            </html>
+                        ";
+                        
+                        if (send_email($user['email'], $reject_subject, $reject_message)) {
+                            $reject_email_sent = true;
+                        }
+                    }
+                    
+                    // If main method fails, try fallback
+                    if (!$reject_email_sent && file_exists('../includes/email_fallback.php')) {
+                        require_once '../includes/email_fallback.php';
+                        if (function_exists('send_email_fallback')) {
+                            $simple_reject_message = "Dear {$user['full_name']},\n\nYour registration has been rejected. Please contact support at " . ADMIN_EMAIL . " for more information.\n\nBest regards,\nBillPay Pro Team";
+                            send_email_fallback($user['email'], "Registration Rejected - BillPay Pro", $simple_reject_message, false);
+                        }
+                    }
+                }
+                
+                $message = "User registration rejected. Notification sent.";
+                $message_type = "success";
+            }
+            
+        } catch (Exception $e) {
+            $message = "Error updating user: " . $e->getMessage();
+            $message_type = "error";
+            error_log("Approval error: " . $e->getMessage());
         }
-        
-        $_SESSION['success_message'] = "User approved successfully! Approval email has been sent.";
-        header("Location: approve_users.php");
-        exit;
     }
-    
-    if (isset($_POST['reject_user'])) {
-        $user_id = $_POST['user_id'];
-        
-        // Get user details before updating
-        $stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
-        $stmt->execute([$user_id]);
-        $user = $stmt->fetch();
-        
-        $stmt = $pdo->prepare("UPDATE users SET admin_approved = 0, registration_status = 'rejected', account_status = 'inactive', updated_at = NOW() WHERE id = ?");
-        $stmt->execute([$user_id]);
-        
-        // Send rejection email
-        if ($user) {
-            sendRejectionEmail($user['email'], $user['full_name']);
-        }
-        
-        $_SESSION['success_message'] = "User rejected successfully!";
-        header("Location: approve_users.php");
-        exit;
-    }
+}
+
+// Get all pending users
+try {
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE is_admin = FALSE AND email_verified = TRUE AND admin_approved = FALSE AND registration_status = 'verified' AND is_active = TRUE ORDER BY created_at DESC");
+    $stmt->execute();
+    $pending_users = $stmt->fetchAll();
+} catch (Exception $e) {
+    $pending_users = [];
+    error_log("Pending users error: " . $e->getMessage());
+}
+
+// Get all users for management
+try {
+    $stmt = $pdo->query("SELECT * FROM users WHERE is_admin = FALSE ORDER BY 
+        CASE registration_status 
+            WHEN 'verified' THEN 1
+            WHEN 'pending' THEN 2
+            WHEN 'approved' THEN 3
+            WHEN 'rejected' THEN 4
+        END,
+        created_at DESC");
+    $all_users = $stmt->fetchAll();
+} catch (Exception $e) {
+    $all_users = [];
+    error_log("All users error: " . $e->getMessage());
 }
 ?>
 
@@ -126,455 +202,781 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Approve Users - BillPay Pro</title>
+    <title>Approve Users - Admin Panel</title>
     <link rel="stylesheet" href="../assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        .approve-container {
+        body {
+            background: #f5f7fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
             padding: 20px;
-            max-width: 1400px;
-            margin: 0 auto;
         }
         
-        .header-section {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #075B5E;
             margin-bottom: 30px;
-            padding-bottom: 20px;
+            padding-bottom: 15px;
             border-bottom: 2px solid #f0f0f0;
         }
         
-        .header-section h1 {
-            margin: 0;
-            color: #075B5E;
+        .alert {
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
         }
         
-        .pending-badge {
-            background: #e74c3c;
-            color: white;
-            border-radius: 20px;
-            padding: 5px 15px;
-            font-size: 0.9rem;
-            font-weight: bold;
-        }
-        
-        .back-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 20px;
-            background: #6c757d;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: 500;
-            transition: background-color 0.2s;
-        }
-        
-        .back-btn:hover {
-            background: #5a6268;
-        }
-        
-        .bulk-actions {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .bulk-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .bulk-checkbox input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-        }
-        
-        .bulk-buttons {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 20px;
-            background: #075B5E;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: 500;
-            border: none;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        
-        .btn:hover {
-            background: #0a7c80;
-        }
-        
-        .btn-success {
-            background: #28a745;
-        }
-        
-        .btn-success:hover {
-            background: #218838;
-        }
-        
-        .btn-danger {
-            background: #dc3545;
-        }
-        
-        .btn-danger:hover {
-            background: #c82333;
-        }
-        
-        .btn-secondary {
-            background: #6c757d;
-        }
-        
-        .btn-secondary:hover {
-            background: #5a6268;
-        }
-        
-        .users-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 20px;
-        }
-        
-        .user-card {
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow: hidden;
-            transition: transform 0.2s;
-            position: relative;
-        }
-        
-        .user-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-        }
-        
-        .user-header {
-            background: #075B5E;
-            color: white;
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .user-avatar {
-            width: 60px;
-            height: 60px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        
-        .user-info {
-            flex: 1;
-        }
-        
-        .user-name {
-            margin: 0;
-            font-size: 1.2rem;
-        }
-        
-        .user-email {
-            margin: 5px 0 0;
-            opacity: 0.9;
-            font-size: 0.9rem;
-        }
-        
-        .user-body {
-            padding: 20px;
-        }
-        
-        .user-details p {
-            margin: 10px 0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .user-details strong {
-            color: #075B5E;
-            min-width: 140px;
-        }
-        
-        .status-icon {
-            width: 1rem;
-            height: 1rem;
-        }
-        
-        .user-actions {
-            padding: 20px;
-            border-top: 1px solid #f0f0f0;
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .no-results {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 40px 20px;
-            color: #666;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .message {
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-        
-        .success-message {
+        .alert-success {
             background: #d4edda;
             color: #155724;
             border: 1px solid #c3e6cb;
         }
         
-        .error-message {
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .alert-danger {
             background: #f8d7da;
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
         
-        .card-checkbox {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            width: 20px;
-            height: 20px;
-            z-index: 10;
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
         }
         
-        .registration-time {
-            font-size: 0.85rem;
-            color: #666;
-            margin-top: 5px;
+        .tabs {
+            display: flex;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #e9ecef;
+            flex-wrap: wrap;
         }
         
-        .time-icon {
-            width: 0.9rem;
-            height: 0.9rem;
-            margin-right: 5px;
-            vertical-align: middle;
+        .tab {
+            padding: 12px 24px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            font-weight: 500;
+            color: #6c757d;
+            transition: all 0.3s;
         }
         
-        .email-notification {
-            background: #f0f7f7;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-            font-size: 0.85rem;
-            border-left: 3px solid #075B5E;
+        .tab:hover {
+            color: #075B5E;
+        }
+        
+        .tab.active {
+            color: #075B5E;
+            border-bottom-color: #075B5E;
+            background: rgba(7, 91, 94, 0.05);
+        }
+        
+        .tab-badge {
+            background: #6c757d;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        
+        .tab.active .tab-badge {
+            background: #075B5E;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .user-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 25px;
+            margin-top: 20px;
+        }
+        
+        .user-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+            border-left: 5px solid #3498db;
+            transition: transform 0.3s, box-shadow 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .user-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+        }
+        
+        .user-card.pending {
+            border-left-color: #f39c12;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 3px 15px rgba(243, 156, 18, 0.1); }
+            50% { box-shadow: 0 3px 20px rgba(243, 156, 18, 0.2); }
+            100% { box-shadow: 0 3px 15px rgba(243, 156, 18, 0.1); }
+        }
+        
+        .user-card.approved {
+            border-left-color: #27ae60;
+        }
+        
+        .user-card.rejected {
+            border-left-color: #e74c3c;
+            opacity: 0.8;
+        }
+        
+        .user-card.inactive {
+            border-left-color: #95a5a6;
+            opacity: 0.6;
         }
         
         .status-badge {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
+            padding: 6px 14px;
             border-radius: 20px;
             font-size: 0.85rem;
-            font-weight: 500;
-        }
-        
-        .status-verified {
-            background: #d4edda;
-            color: #155724;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 15px;
         }
         
         .status-pending {
-            background: #fff3cd;
-            color: #856404;
+            background: #fef9e7;
+            color: #f39c12;
+            border: 1px solid #fef3cd;
+        }
+        
+        .status-approved {
+            background: #e8f6f3;
+            color: #27ae60;
+            border: 1px solid #d1f2eb;
+        }
+        
+        .status-rejected {
+            background: #fdedec;
+            color: #e74c3c;
+            border: 1px solid #fadbd8;
+        }
+        
+        .status-verified {
+            background: #eaf2f8;
+            color: #3498db;
+            border: 1px solid #d6eaf8;
+        }
+        
+        .user-card h3 {
+            margin: 0 0 10px;
+            color: #2c3e50;
+            font-size: 1.3rem;
+        }
+        
+        .user-info {
+            margin: 15px 0;
+        }
+        
+        .user-info p {
+            margin: 8px 0;
+            display: flex;
+            align-items: flex-start;
+        }
+        
+        .user-info strong {
+            min-width: 120px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .user-info span {
+            color: #333;
+            flex: 1;
+        }
+        
+        .user-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .btn-approve, .btn-reject, .btn-view {
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.3s;
+            text-decoration: none;
+            font-size: 0.95rem;
+        }
+        
+        .btn-approve {
+            background: #27ae60;
+            color: white;
+            flex: 1;
+        }
+        
+        .btn-approve:hover {
+            background: #219653;
+            transform: translateY(-2px);
+        }
+        
+        .btn-reject {
+            background: #e74c3c;
+            color: white;
+            flex: 1;
+        }
+        
+        .btn-reject:hover {
+            background: #c0392b;
+            transform: translateY(-2px);
+        }
+        
+        .btn-view {
+            background: #3498db;
+            color: white;
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        .btn-view:hover {
+            background: #2980b9;
+            transform: translateY(-2px);
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6c757d;
+        }
+        
+        .empty-state i {
+            width: 80px;
+            height: 80px;
+            color: #dee2e6;
+            margin-bottom: 20px;
+        }
+        
+        .empty-state h3 {
+            margin: 0 0 10px;
+            color: #6c757d;
+        }
+        
+        .user-actions-form {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+        
+        .user-actions-form button {
+            flex: 1;
+        }
+        
+        .registration-date {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 0.85rem;
+            color: #6c757d;
+            background: #f8f9fa;
+            padding: 4px 10px;
+            border-radius: 15px;
+        }
+        
+        .customer-code {
+            background: #075B5E;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+        
+        .email-test-link {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+        
+        .email-test-link a {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .email-test-link a:hover {
+            text-decoration: underline;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .user-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .tabs {
+                flex-direction: column;
+            }
+            
+            .tab {
+                text-align: center;
+            }
+            
+            .user-info p {
+                flex-direction: column;
+            }
+            
+            .user-info strong {
+                min-width: auto;
+                margin-bottom: 5px;
+            }
         }
     </style>
 </head>
 <body>
-    <?php include '../includes/header.php'; ?>
-    
-    <div class="approve-container">
-        <div class="header-section">
-            <h1>
-                <i data-lucide="user-check"></i>
-                Approve Users
-                <?php if ($pending_approvals_count > 0): ?>
-                    <span class="pending-badge"><?php echo $pending_approvals_count; ?> Pending</span>
+    <div class="container">
+        <h1><i data-lucide="users" style="width: 32px; height: 32px; vertical-align: middle; margin-right: 10px;"></i> User Management</h1>
+        
+        <?php if ($message): ?>
+            <div class="alert alert-<?php echo $message_type == 'success' ? 'success' : ($message_type == 'warning' ? 'warning' : ($message_type == 'info' ? 'info' : 'danger')); ?>">
+                <?php if ($message_type == 'success'): ?>
+                    <i data-lucide="check-circle" style="width: 24px; height: 24px;"></i>
+                <?php elseif ($message_type == 'warning'): ?>
+                    <i data-lucide="alert-triangle" style="width: 24px; height: 24px;"></i>
+                <?php elseif ($message_type == 'info'): ?>
+                    <i data-lucide="info" style="width: 24px; height: 24px;"></i>
+                <?php else: ?>
+                    <i data-lucide="alert-circle" style="width: 24px; height: 24px;"></i>
                 <?php endif; ?>
-            </h1>
-            <a href="index.php" class="back-btn">
-                <i data-lucide="arrow-left"></i> Back to Dashboard
-            </a>
+                <span><?php echo htmlspecialchars($message); ?></span>
+            </div>
+        <?php endif; ?>
+        
+        <div class="email-test-link">
+            <i data-lucide="mail" style="width: 20px; height: 20px; color: #3498db;"></i>
+            <span>Having email issues? <a href="test_email.php">Test Email Configuration</a></span>
         </div>
         
-        <!-- Display messages -->
-        <?php if (isset($_SESSION['success_message'])): ?>
-            <div class="message success-message">
-                <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                <?php echo $_SESSION['success_message']; unset($_SESSION['success_message']); ?>
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('pending')">
+                <span>Pending Approval</span>
+                <span class="tab-badge"><?php echo count($pending_users); ?></span>
             </div>
-        <?php endif; ?>
+            <div class="tab" onclick="showTab('all')">
+                <span>All Users</span>
+                <span class="tab-badge"><?php echo count($all_users); ?></span>
+            </div>
+            <div class="tab" onclick="showTab('stats')">
+                <span>Statistics</span>
+            </div>
+        </div>
         
-        <!-- Bulk Actions -->
-        <?php if (!empty($pending_users)): ?>
-        <form method="POST" class="bulk-actions">
-            <div class="bulk-checkbox">
-                <input type="checkbox" id="select-all" onchange="toggleAllCheckboxes(this)">
-                <label for="select-all"><strong>Select All</strong></label>
-            </div>
-            <div class="bulk-buttons">
-                <button type="submit" name="approve_selected" class="btn btn-success" onclick="return confirmBulkAction('approve')">
-                    <i data-lucide="check"></i> Approve Selected
-                </button>
-                <button type="submit" name="reject_selected" class="btn btn-danger" onclick="return confirmBulkAction('reject')">
-                    <i data-lucide="x"></i> Reject Selected
-                </button>
-            </div>
-        </form>
-        <?php endif; ?>
-        
-        <!-- Pending Users List -->
-        <div class="users-grid">
-            <?php if (empty($pending_users)): ?>
-                <div class="no-results">
-                    <i data-lucide="users" style="width: 64px; height: 64px; opacity: 0.5; margin-bottom: 20px;"></i>
-                    <h3>No Pending Approvals</h3>
-                    <p>All users are currently approved. Check back later for new registrations.</p>
-                    <a href="manage_users.php" class="btn" style="margin-top: 15px;">
-                        <i data-lucide="users"></i> View All Users
-                    </a>
-                </div>
-            <?php else: ?>
-                <form method="POST" id="users-form">
-                    <?php foreach ($pending_users as $customer): ?>
-                        <div class="user-card">
-                            <input type="checkbox" name="selected_users[]" value="<?php echo $customer['id']; ?>" class="card-checkbox" id="user_<?php echo $customer['id']; ?>">
-                            
-                            <div class="user-header">
-                                <div class="user-avatar">
-                                    <?php 
-                                    $name_parts = explode(' ', $customer['full_name']);
-                                    $initials = '';
-                                    foreach ($name_parts as $part) {
-                                        if (!empty($part)) {
-                                            $initials .= strtoupper(substr($part, 0, 1));
-                                        }
-                                    }
-                                    echo substr($initials, 0, 2);
-                                    ?>
-                                </div>
-                                <div class="user-info">
-                                    <h3 class="user-name"><?php echo htmlspecialchars($customer['full_name']); ?></h3>
-                                    <p class="user-email"><?php echo htmlspecialchars($customer['email']); ?></p>
-                                    <p class="registration-time">
-                                        <i data-lucide="clock" class="time-icon"></i>
-                                        Registered: <?php echo date('M d, Y h:i A', strtotime($customer['created_at'])); ?>
-                                    </p>
-                                </div>
+        <!-- Pending Users Tab -->
+        <div id="pending-tab" class="tab-content active">
+            <h2 style="color: #f39c12; margin-bottom: 20px;">
+                <i data-lucide="clock" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 10px;"></i>
+                Users Pending Approval
+            </h2>
+            
+            <?php if (count($pending_users) > 0): ?>
+                <div class="user-grid">
+                    <?php foreach ($pending_users as $user): ?>
+                        <div class="user-card pending">
+                            <div class="registration-date">
+                                <i data-lucide="calendar" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 5px;"></i>
+                                <?php echo date('M d, Y', strtotime($user['created_at'])); ?>
                             </div>
                             
-                            <div class="user-body">
-                                <div class="user-details">
+                            <?php if ($user['customer_code']): ?>
+                                <div class="customer-code"><?php echo htmlspecialchars($user['customer_code']); ?></div>
+                            <?php endif; ?>
+                            
+                            <span class="status-badge status-pending">
+                                <i data-lucide="clock" style="width: 16px; height: 16px;"></i>
+                                Awaiting Approval
+                            </span>
+                            
+                            <h3><?php echo htmlspecialchars($user['full_name']); ?></h3>
+                            
+                            <div class="user-info">
+                                <p>
+                                    <strong><i data-lucide="mail" style="width: 16px; height: 16px; margin-right: 8px;"></i> Email:</strong>
+                                    <span><?php echo htmlspecialchars($user['email']); ?></span>
+                                </p>
+                                <p>
+                                    <strong><i data-lucide="phone" style="width: 16px; height: 16px; margin-right: 8px;"></i> Phone:</strong>
+                                    <span><?php echo htmlspecialchars($user['phone'] ?? 'Not provided'); ?></span>
+                                </p>
+                                <?php if ($user['address']): ?>
                                     <p>
-                                        <i data-lucide="phone" class="status-icon"></i>
-                                        <strong>Phone:</strong> <?php echo htmlspecialchars($customer['phone'] ?? 'Not provided'); ?>
+                                        <strong><i data-lucide="map-pin" style="width: 16px; height: 16px; margin-right: 8px;"></i> Address:</strong>
+                                        <span><?php echo htmlspecialchars($user['address']); ?></span>
                                     </p>
-                                    <p>
-                                        <i data-lucide="home" class="status-icon"></i>
-                                        <strong>Address:</strong> <?php echo htmlspecialchars($customer['address'] ?? 'Not provided'); ?>
-                                    </p>
-                                    <p>
-                                        <i data-lucide="mail-check" class="status-icon"></i>
-                                        <strong>Email Status:</strong> 
-                                        <span class="status-badge status-verified">Verified</span>
-                                    </p>
-                                    <p>
-                                        <i data-lucide="shield" class="status-icon"></i>
-                                        <strong>Account Status:</strong> 
-                                        <span class="status-badge status-pending">
-                                            <i data-lucide="clock" style="width: 1rem; height: 1rem; margin-right: 0.3rem; vertical-align: middle;"></i>
-                                            Awaiting Approval
-                                        </span>
-                                    </p>
-                                    
-                                    <div class="email-notification">
-                                        <i data-lucide="mail" style="width: 0.9rem; height: 0.9rem; margin-right: 0.3rem; vertical-align: middle;"></i>
-                                        <small>Approval emails will be sent automatically</small>
-                                    </div>
-                                </div>
+                                <?php endif; ?>
+                                <p>
+                                    <strong><i data-lucide="shield-check" style="width: 16px; height: 16px; margin-right: 8px;"></i> Status:</strong>
+                                    <span style="color: #f39c12; font-weight: 500;">Email Verified (Pending Admin Approval)</span>
+                                </p>
+                            </div>
+                            
+                            <form method="POST" action="" class="user-actions-form">
+                                <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
+                                <input type="hidden" name="action" id="action_<?php echo $user['id']; ?>">
+                                <button type="submit" name="approve_user" class="btn-approve" onclick="setAction(<?php echo $user['id']; ?>, 'approve')">
+                                    <i data-lucide="check" style="width: 18px; height: 18px;"></i>
+                                    Approve
+                                </button>
+                                <button type="submit" name="approve_user" class="btn-reject" onclick="return confirmReject(<?php echo $user['id']; ?>)">
+                                    <i data-lucide="x" style="width: 18px; height: 18px;"></i>
+                                    Reject
+                                </button>
+                            </form>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php else: ?>
+                <div class="empty-state">
+                    <i data-lucide="user-check" style="width: 80px; height: 80px;"></i>
+                    <h3>No Pending Approvals</h3>
+                    <p>All users have been approved. Great work!</p>
+                    <p style="margin-top: 20px; color: #6c757d; font-size: 0.9rem;">
+                        <i data-lucide="info" style="width: 16px; height: 16px; vertical-align: middle;"></i>
+                        New registrations will appear here automatically.
+                    </p>
+                </div>
+            <?php endif; ?>
+        </div>
+        
+        <!-- All Users Tab -->
+        <div id="all-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 20px;">
+                <i data-lucide="users" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 10px;"></i>
+                All Registered Users
+            </h2>
+            
+            <?php if (count($all_users) > 0): ?>
+                <div class="user-grid">
+                    <?php foreach ($all_users as $user): 
+                        // Determine status
+                        $status_class = '';
+                        $status_text = '';
+                        $status_icon = 'clock';
+                        
+                        if (!$user['email_verified']) {
+                            $status_class = 'status-pending';
+                            $status_text = 'Email Not Verified';
+                        } elseif ($user['registration_status'] == 'verified' && !$user['admin_approved']) {
+                            $status_class = 'status-pending';
+                            $status_text = 'Pending Approval';
+                            $status_icon = 'clock';
+                        } elseif ($user['registration_status'] == 'approved' && $user['admin_approved']) {
+                            $status_class = 'status-approved';
+                            $status_text = 'Approved';
+                            $status_icon = 'check-circle';
+                        } elseif ($user['registration_status'] == 'rejected') {
+                            $status_class = 'status-rejected';
+                            $status_text = 'Rejected';
+                            $status_icon = 'x-circle';
+                        } else {
+                            $status_class = 'status-verified';
+                            $status_text = ucfirst($user['registration_status']);
+                            $status_icon = 'shield';
+                        }
+                        
+                        $card_class = '';
+                        if ($user['registration_status'] == 'rejected') {
+                            $card_class = 'rejected';
+                        } elseif ($user['registration_status'] == 'approved' && $user['admin_approved']) {
+                            $card_class = 'approved';
+                        } elseif (!$user['is_active']) {
+                            $card_class = 'inactive';
+                        }
+                    ?>
+                        <div class="user-card <?php echo $card_class; ?>">
+                            <div class="registration-date">
+                                <i data-lucide="calendar" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 5px;"></i>
+                                <?php echo date('M d, Y', strtotime($user['created_at'])); ?>
+                            </div>
+                            
+                            <?php if ($user['customer_code']): ?>
+                                <div class="customer-code"><?php echo htmlspecialchars($user['customer_code']); ?></div>
+                            <?php endif; ?>
+                            
+                            <span class="status-badge <?php echo $status_class; ?>">
+                                <i data-lucide="<?php echo $status_icon; ?>" style="width: 16px; height: 16px;"></i>
+                                <?php echo $status_text; ?>
+                            </span>
+                            
+                            <h3><?php echo htmlspecialchars($user['full_name']); ?></h3>
+                            
+                            <div class="user-info">
+                                <p>
+                                    <strong><i data-lucide="mail" style="width: 16px; height: 16px; margin-right: 8px;"></i> Email:</strong>
+                                    <span><?php echo htmlspecialchars($user['email']); ?></span>
+                                </p>
+                                <p>
+                                    <strong><i data-lucide="phone" style="width: 16px; height: 16px; margin-right: 8px;"></i> Phone:</strong>
+                                    <span><?php echo htmlspecialchars($user['phone'] ?? 'Not provided'); ?></span>
+                                </p>
+                                <p>
+                                    <strong><i data-lucide="user" style="width: 16px; height: 16px; margin-right: 8px;"></i> Status:</strong>
+                                    <span>
+                                        <?php echo ucfirst($user['registration_status']); ?>
+                                        <?php if ($user['admin_approved']): ?>
+                                            <i data-lucide="check" style="width: 14px; height: 14px; color: #27ae60; margin-left: 5px; vertical-align: middle;"></i>
+                                        <?php endif; ?>
+                                    </span>
+                                </p>
+                                <p>
+                                    <strong><i data-lucide="activity" style="width: 16px; height: 16px; margin-right: 8px;"></i> Last Login:</strong>
+                                    <span>
+                                        <?php if ($user['last_login']): ?>
+                                            <?php echo date('M d, Y H:i', strtotime($user['last_login'])); ?>
+                                        <?php else: ?>
+                                            <span style="color: #6c757d;">Never</span>
+                                        <?php endif; ?>
+                                    </span>
+                                </p>
                             </div>
                             
                             <div class="user-actions">
-                                <form method="POST" style="margin: 0;">
-                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
-                                    <button type="submit" name="approve_user" class="btn btn-success">
-                                        <i data-lucide="check"></i> Approve & Email
-                                    </button>
-                                </form>
-                                
-                                <form method="POST" style="margin: 0;">
-                                    <input type="hidden" name="user_id" value="<?php echo $customer['id']; ?>">
-                                    <button type="submit" name="reject_user" class="btn btn-danger" onclick="return confirm('Are you sure you want to reject this user? A rejection email will be sent.')">
-                                        <i data-lucide="x"></i> Reject & Email
-                                    </button>
-                                </form>
+                                <a href="manage_users.php?user_id=<?php echo $user['id']; ?>" class="btn-view">
+                                    <i data-lucide="user" style="width: 18px; height: 18px;"></i>
+                                    View Details
+                                </a>
+                                <?php if ($user['registration_status'] == 'approved' && $user['admin_approved'] && $user['is_active']): ?>
+                                    <a href="manage_bills.php?user_id=<?php echo $user['id']; ?>" class="btn-view" style="background: #2ecc71; margin-top: 10px;">
+                                        <i data-lucide="file-text" style="width: 18px; height: 18px;"></i>
+                                        Create Bill
+                                    </a>
+                                <?php endif; ?>
                             </div>
                         </div>
                     <?php endforeach; ?>
-                </form>
+                </div>
+            <?php else: ?>
+                <div class="empty-state">
+                    <i data-lucide="users" style="width: 80px; height: 80px;"></i>
+                    <h3>No Users Found</h3>
+                    <p>No users have registered yet.</p>
+                    <p style="margin-top: 20px; color: #6c757d; font-size: 0.9rem;">
+                        <i data-lucide="info" style="width: 16px; height: 16px; vertical-align: middle;"></i>
+                        Users will appear here after they register and verify their email.
+                    </p>
+                </div>
             <?php endif; ?>
+        </div>
+        
+        <!-- Statistics Tab -->
+        <div id="stats-tab" class="tab-content">
+            <h2 style="color: #9b59b6; margin-bottom: 20px;">
+                <i data-lucide="bar-chart" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 10px;"></i>
+                User Statistics
+            </h2>
+            
+            <?php
+            // Get user statistics
+            try {
+                // Total users
+                $stmt = $pdo->query("SELECT COUNT(*) as total FROM users WHERE is_admin = FALSE");
+                $total_users = $stmt->fetch()['total'];
+                
+                // Email verified but not approved
+                $stmt = $pdo->query("SELECT COUNT(*) as pending FROM users WHERE is_admin = FALSE AND email_verified = TRUE AND admin_approved = FALSE AND registration_status = 'verified'");
+                $pending_approval = $stmt->fetch()['pending'];
+                
+                // Approved users
+                $stmt = $pdo->query("SELECT COUNT(*) as approved FROM users WHERE is_admin = FALSE AND admin_approved = TRUE AND registration_status = 'approved'");
+                $approved_users = $stmt->fetch()['approved'];
+                
+                // Rejected users
+                $stmt = $pdo->query("SELECT COUNT(*) as rejected FROM users WHERE is_admin = FALSE AND registration_status = 'rejected'");
+                $rejected_users = $stmt->fetch()['rejected'];
+                
+                // Today's registrations
+                $stmt = $pdo->query("SELECT COUNT(*) as today FROM users WHERE is_admin = FALSE AND DATE(created_at) = CURDATE()");
+                $today_registrations = $stmt->fetch()['today'];
+                
+                // This month's registrations
+                $stmt = $pdo->query("SELECT COUNT(*) as this_month FROM users WHERE is_admin = FALSE AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())");
+                $month_registrations = $stmt->fetch()['this_month'];
+                
+                // Email verification stats
+                $stmt = $pdo->query("SELECT COUNT(*) as verified FROM users WHERE is_admin = FALSE AND email_verified = TRUE");
+                $email_verified = $stmt->fetch()['verified'];
+                
+            } catch (Exception $e) {
+                $total_users = $pending_approval = $approved_users = $rejected_users = $today_registrations = $month_registrations = $email_verified = 0;
+                error_log("Statistics error: " . $e->getMessage());
+            }
+            ?>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">
+                <div style="background: #e8f4fd; padding: 25px; border-radius: 10px; text-align: center; border-left: 4px solid #3498db;">
+                    <div style="font-size: 2.5rem; font-weight: bold; color: #3498db; margin-bottom: 10px;"><?php echo $total_users; ?></div>
+                    <div style="color: #2c3e50; font-weight: 500;">Total Users</div>
+                </div>
+                
+                <div style="background: #fef9e7; padding: 25px; border-radius: 10px; text-align: center; border-left: 4px solid #f39c12;">
+                    <div style="font-size: 2.5rem; font-weight: bold; color: #f39c12; margin-bottom: 10px;"><?php echo $pending_approval; ?></div>
+                    <div style="color: #2c3e50; font-weight: 500;">Pending Approval</div>
+                </div>
+                
+                <div style="background: #e8f6f3; padding: 25px; border-radius: 10px; text-align: center; border-left: 4px solid #27ae60;">
+                    <div style="font-size: 2.5rem; font-weight: bold; color: #27ae60; margin-bottom: 10px;"><?php echo $approved_users; ?></div>
+                    <div style="color: #2c3e50; font-weight: 500;">Approved Users</div>
+                </div>
+                
+                <div style="background: #fdedec; padding: 25px; border-radius: 10px; text-align: center; border-left: 4px solid #e74c3c;">
+                    <div style="font-size: 2.5rem; font-weight: bold; color: #e74c3c; margin-bottom: 10px;"><?php echo $rejected_users; ?></div>
+                    <div style="color: #2c3e50; font-weight: 500;">Rejected Users</div>
+                </div>
+            </div>
+            
+            <div style="background: white; border: 1px solid #e9ecef; border-radius: 10px; padding: 25px; margin-top: 20px;">
+                <h3 style="color: #075B5E; margin-top: 0; margin-bottom: 20px;">
+                    <i data-lucide="calendar" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 10px;"></i>
+                    Registration Activity
+                </h3>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #075B5E;"><?php echo $today_registrations; ?></div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Today</div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #075B5E;"><?php echo $month_registrations; ?></div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">This Month</div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #075B5E;"><?php echo round($month_registrations / max(date('t'), 1) * 100, 1); ?>%</div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Monthly Growth</div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #075B5E;"><?php echo $total_users > 0 ? round(($approved_users / $total_users) * 100, 1) : 0; ?>%</div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Approval Rate</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="background: white; border: 1px solid #e9ecef; border-radius: 10px; padding: 25px; margin-top: 20px;">
+                <h3 style="color: #075B5E; margin-top: 0; margin-bottom: 20px;">
+                    <i data-lucide="mail" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 10px;"></i>
+                    Email Statistics
+                </h3>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #3498db;"><?php echo $email_verified; ?></div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Email Verified</div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #3498db;"><?php echo $total_users > 0 ? round(($email_verified / $total_users) * 100, 1) : 0; ?>%</div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Verification Rate</div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #3498db;"><?php echo $email_verified > 0 ? round(($pending_approval / $email_verified) * 100, 1) : 0; ?>%</div>
+                        <div style="color: #6c757d; font-size: 0.9rem;">Awaiting Approval</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     
-    <?php include '../includes/footer.php'; ?>
-    
     <script>
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active class from all tab buttons
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            
+            // Add active class to clicked tab button
+            event.target.classList.add('active');
+        }
+        
+        function setAction(userId, action) {
+            document.getElementById('action_' + userId).value = action;
+            return true;
+        }
+        
+        function confirmReject(userId) {
+            if (confirm('Are you sure you want to reject this user? This action cannot be undone.')) {
+                setAction(userId, 'reject');
+                return true;
+            }
+            return false;
+        }
+        
         // Initialize Lucide icons
         lucide.createIcons();
         
-        // Toggle all checkboxes
-        function toggleAllCheckboxes(source) {
-            const checkboxes = document.querySelectorAll('input[name="selected_users[]"]');
-            checkboxes.forEach(checkbox => {
-                checkbox.checked = source.checked;
-            });
-        }
-        
-        // Confirm bulk actions
-        function confirmBulkAction(action) {
-            const checkboxes = document.querySelectorAll('input[name="selected_users[]"]:checked');
-            if (checkboxes.length === 0) {
-                alert('Please select at least one user to ' + action + '.');
-                return false;
+        // Auto-refresh pending users every 30 seconds
+        setInterval(function() {
+            if (document.getElementById('pending-tab').classList.contains('active')) {
+                location.reload();
             }
-            
-            const userCount = checkboxes.length;
-            const actionText = action === 'approve' ? 'approve' : 'reject';
-            const emailNote = action === 'approve' ? '\n\nApproval emails will be sent to all selected users.' : '\n\nRejection emails will be sent to all selected users.';
-            return confirm(`Are you sure you want to ${actionText} ${userCount} user(s)?${emailNote}`);
-        }
+        }, 30000);
     </script>
 </body>
 </html>
