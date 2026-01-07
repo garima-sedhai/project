@@ -9,7 +9,7 @@ require_once $base_path . '/includes/config.php';
 // Check if we should skip email sending for testing
 $skip_email = isset($_GET['skip_email']) || (defined('EMAIL_DEBUG') && EMAIL_DEBUG);
 
-session_start();
+//session_start();
 require_once $base_path . '/includes/db_connection.php';
 
 // If already logged in, redirect to dashboard

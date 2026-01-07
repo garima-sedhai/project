@@ -2,7 +2,7 @@
 // For admin files:
 $base_path = dirname(__DIR__); // Goes up ONE level from admin folder to project folder
 require_once $base_path . '/includes/config.php';
-session_start();
+//session_start();
 require_once $base_path . '/includes/db_connection.php';
 
 // Only redirect if already logged in as admin

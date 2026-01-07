@@ -1,41 +1,46 @@
 <?php
-include 'includes/config.php';
+// test_db.php - Test database connection
+require_once 'include/config.php';
 
 echo "<h2>Database Connection Test</h2>";
 
 try {
-    // Test connection
-    echo "Database connection successful<br>";
+    // Test basic connection
+    echo "<p style='color:green'>✅ Connected to MySQL!</p>";
     
-    // Test users table
+    // Count users
     $stmt = $pdo->query("SELECT COUNT(*) as count FROM users");
     $result = $stmt->fetch();
-    echo "Users table: " . $result['count'] . " users found<br>";
+    echo "<p>Total users in database: {$result['count']}</p>";
     
-    // Test services table
-    $stmt = $pdo->query("SELECT COUNT(*) as count FROM services");
-    $result = $stmt->fetch();
-    echo "Services table: " . $result['count'] . " services found<br>";
+    // Check admin
+    $stmt = $pdo->query("SELECT * FROM users WHERE email = 'admin@billpay.com'");
+    $admin = $stmt->fetch();
     
-    // Show table structure
-    echo "<h3>Users Table Structure:</h3>";
-    $stmt = $pdo->query("DESCRIBE users");
-    $columns = $stmt->fetchAll();
-    
-    echo "<table border='1'>";
-    echo "<tr><th>Field</th><th>Type</th><th>Null</th><th>Key</th><th>Default</th></tr>";
-    foreach ($columns as $col) {
-        echo "<tr>";
-        echo "<td>{$col['Field']}</td>";
-        echo "<td>{$col['Type']}</td>";
-        echo "<td>{$col['Null']}</td>";
-        echo "<td>{$col['Key']}</td>";
-        echo "<td>{$col['Default']}</td>";
-        echo "</tr>";
+    if ($admin) {
+        echo "<div style='background:#d4edda; padding:15px; border-radius:5px;'>";
+        echo "<h3>✅ Admin User Found!</h3>";
+        echo "<p><strong>Email:</strong> {$admin['email']}</p>";
+        echo "<p><strong>User Type:</strong> {$admin['user_type']}</p>";
+        echo "<p><strong>Status:</strong> {$admin['account_status']}</p>";
+        echo "<p><strong>Login:</strong> admin@billpay.com / password</p>";
+        echo "</div>";
+    } else {
+        echo "<p style='color:red'>❌ Admin user not found</p>";
     }
-    echo "</table>";
     
-} catch(PDOException $e) {
-    echo "Error: " . $e->getMessage();
+    // Check other tables
+    $tables = ['categories', 'products', 'email_verifications'];
+    foreach ($tables as $table) {
+        $stmt = $pdo->query("SELECT COUNT(*) as count FROM $table");
+        $result = $stmt->fetch();
+        echo "<p>Table '$table': {$result['count']} records</p>";
+    }
+    
+} catch (Exception $e) {
+    echo "<p style='color:red'>❌ Error: " . $e->getMessage() . "</p>";
 }
+
+echo "<hr>";
+echo "<p><a href='login.php'>Go to Login Page</a></p>";
 ?>
