@@ -2,7 +2,7 @@
 // For admin files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
+// session_start(); // REMOVE THIS LINE - config.php already starts session
 require_once $base_path . '/includes/db_connection.php';
 
 // Redirect if not admin
@@ -19,10 +19,18 @@ $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM users WHERE is_admin = FALS
 $stmt->execute();
 $stats['total_customers'] = $stmt->fetch()['count'];
 
-// Get total services
-$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM services");
-$stmt->execute();
-$stats['total_services'] = $stmt->fetch()['count'];
+// Get total services (skip if table doesn't exist)
+$stats['total_services'] = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM services");
+    $stmt->execute();
+    $stats['total_services'] = $stmt->fetch()['count'] ?? 0;
+} catch (Exception $e) {
+    // services table doesn't exist, use products instead
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM products");
+    $stmt->execute();
+    $stats['total_services'] = $stmt->fetch()['count'] ?? 0;
+}
 
 // Get total invoices (check if table exists first)
 try {
