@@ -1,36 +1,42 @@
 <?php
+// DEBUG: Capture all output to see what's happening
+ob_start();
+
 session_start();
 
-// EXTREME DEBUGGING - Display all errors
+// EXTREME DEBUGGING
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 
-// Also log errors to our project logs folder
-$log_dir = __DIR__ . '/../logs/';
-if (!file_exists($log_dir)) {
-    mkdir($log_dir, 0777, true);
-}
+// Log file
+$log_file = __DIR__ . '/../logs/payment_debug_' . date('Y-m-d') . '.log';
 ini_set('log_errors', 1);
-ini_set('error_log', $log_dir . 'payment_errors.log');
+ini_set('error_log', $log_file);
 
-error_log("=== PAYMENT ESEWA PAGE LOADED ===");
+error_log("========== PAYMENT PAGE ACCESSED ==========");
+error_log("Time: " . date('Y-m-d H:i:s'));
 error_log("Session ID: " . session_id());
+error_log("User ID in session: " . ($_SESSION['user_id'] ?? 'NOT SET'));
 error_log("POST Data: " . print_r($_POST, true));
+error_log("GET Data: " . print_r($_GET, true));
+error_log("Session Data: " . print_r($_SESSION, true));
+
+// Log errors
+$log_dir = __DIR__ . '/../logs/';
+if (!file_exists($log_dir)) mkdir($log_dir, 0777, true);
 
 require_once '../includes/config.php';
 require_once '../includes/payment_config.php';
 
-// Redirect if not logged in as customer
+// Check if user is logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
-    error_log("User not logged in or is admin");
     header("Location: login.php");
     exit();
 }
 
 // Check if payment session exists
 if (!isset($_SESSION['payment_session'])) {
-    error_log("No payment session found");
     header("Location: payment.php?error=no_payment_session");
     exit();
 }
@@ -38,196 +44,160 @@ if (!isset($_SESSION['payment_session'])) {
 $payment_session = $_SESSION['payment_session'];
 $user_id = $_SESSION['user_id'];
 
-error_log("Payment session found for user: $user_id");
-error_log("Bill ID in session: " . ($payment_session['bill_id'] ?? 'NOT SET'));
-
-// Get bill details - FIXED: Handle all amount fields
+// Get bill details
 $stmt = $pdo->prepare("SELECT 
     b.*, 
     u.full_name, 
     u.phone, 
     u.email,
     u.customer_code,
-    -- Get the first non-null amount value
-    COALESCE(
-        b.amount, 
-        b.final_amount, 
-        b.total_amount,
-        0
-    ) as amount,
+    COALESCE(b.amount, b.final_amount, b.total_amount, 0) as amount,
     u.id as user_id
     FROM bills b 
     JOIN users u ON b.user_id = u.id 
     WHERE b.id = ? AND b.user_id = ? AND b.payment_status = 'pending'");
     
-error_log("Executing bill query with bill_id: " . $payment_session['bill_id'] . " and user_id: $user_id");
-
 $stmt->execute([$payment_session['bill_id'], $user_id]);
 $bill = $stmt->fetch();
 
 if (!$bill) {
-    error_log("ERROR: No pending bill found");
     unset($_SESSION['payment_session']);
     header("Location: payment.php?error=invalid_bill");
     exit();
 }
 
-error_log("Bill found: #" . $bill['bill_number'] . " - Amount: " . ($bill['amount'] ?? 'NOT SET'));
-
 $error = '';
 $success = false;
 
 // Handle form submission
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    error_log("=== FORM SUBMITTED ===");
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
+    error_log("==== FORM SUBMISSION DETECTED ====");
+    error_log("Mobile: " . ($_POST['mobile'] ?? 'empty'));
+    error_log("MPIN: " . ($_POST['mpin'] ?? 'empty'));
     
-    if (isset($_POST['simulate_payment'])) {
-        $mobile = $_POST['mobile'] ?? '';
-        $mpin = $_POST['mpin'] ?? '';
+    $mobile = $_POST['mobile'] ?? '';
+    $mpin = $_POST['mpin'] ?? '';
+    
+    // Validate credentials
+    $valid_customer = in_array($mobile, ['9800000001', '9800000002', '9800000003']) && $mpin === '1234';
+    $valid_admin = $mobile === 'admin' && $mpin === 'admin123';
+    
+    error_log("Valid customer: " . ($valid_customer ? 'YES' : 'NO'));
+    error_log("Valid admin: " . ($valid_admin ? 'YES' : 'NO'));
+    
+    if ($valid_customer || $valid_admin) {
+        $is_admin = $valid_admin;
         
-        error_log("Credentials entered - Mobile: $mobile, MPIN: $mpin");
-        
-        // Demo validation
-        if (($mobile === '9800000001' || $mobile === '9800000002' || $mobile === '9800000003') && $mpin === '1234') {
-            error_log("Valid customer credentials - Processing payment...");
-            $is_admin = false;
-        } elseif ($mobile === 'admin' && $mpin === 'admin123') {
-            error_log("Valid admin credentials - Processing payment...");
-            $is_admin = true;
-        } else {
-            $error = "Invalid credentials. Use demo: Mobile: 9800000001, MPIN: 1234";
-            error_log("Invalid credentials entered");
+        try {
+            error_log("Starting database transaction...");
+            $pdo->beginTransaction();
+            
+            // Get payment amount
+            $payment_amount = $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0;
+            $transaction_id = $payment_session['transaction_id'];
+            
+            error_log("Payment Amount: " . $payment_amount);
+            error_log("Transaction ID: " . $transaction_id);
+            
+            // 1. Update bill status
+            $stmt = $pdo->prepare("UPDATE bills SET 
+                                  payment_status = 'paid', 
+                                  status = 'completed', 
+                                  paid_at = NOW() 
+                                  WHERE id = ?");
+            $stmt->execute([$bill['id']]);
+            error_log("Bill updated: " . $bill['id']);
+            
+            // 2. Insert payment record
+            $stmt = $pdo->prepare("INSERT INTO payments (
+                                  bill_id, 
+                                  customer_id, 
+                                  amount, 
+                                  payment_method, 
+                                  payment_date,
+                                  transaction_id,
+                                  status,
+                                  created_by
+                                  ) VALUES (?, ?, ?, 'esewa', CURDATE(), ?, 'completed', ?)");
+            
+            $stmt->execute([
+                $bill['id'],
+                $user_id,
+                $payment_amount,
+                $transaction_id,
+                $user_id
+            ]);
+            
+            $payment_id = $pdo->lastInsertId();
+            error_log("Payment record created: " . $payment_id);
+            
+            // 3. Create admin notification
+            $admin_message = "eSewa Payment Received - Amount: ₹" . number_format($payment_amount, 2) . 
+                            " - From: " . $_SESSION['full_name'] . 
+                            " (" . ($bill['customer_code'] ?? 'N/A') . ")" .
+                            " - Bill: #" . $bill['bill_number'] . 
+                            " - Transaction: " . $transaction_id .
+                            ($is_admin ? " - Via: Admin QR Scan" : "");
+            
+            // Insert into admin_notifications
+            $stmt = $pdo->prepare("INSERT INTO admin_notifications (title, message, type) VALUES (?, ?, 'payment')");
+            $stmt->execute(['Payment Received', $admin_message]);
+            error_log("Admin notification created");
+            
+            // 4. Create user notification
+            $user_message = "Payment Successful - Amount: ₹" . number_format($payment_amount, 2) . 
+                           " - Bill: #" . $bill['bill_number'] . 
+                           " - Transaction: " . $transaction_id;
+            
+            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Payment Successful', ?, 'payment')");
+            $stmt->execute([$user_id, $user_message]);
+            error_log("User notification created");
+            
+            // 5. Also notify all admin users
+            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) 
+                                  SELECT id, 'New Payment Received', ?, 'payment' FROM users WHERE user_type = 'admin'");
+            $stmt->execute([$admin_message]);
+            error_log("Admin users notified");
+            
+            $pdo->commit();
+            error_log("Transaction committed successfully");
+            
+            // Store success data in session
+            $_SESSION['payment_success'] = [
+                'transaction_id' => $transaction_id,
+                'amount' => $payment_amount,
+                'bill_number' => $bill['bill_number'],
+                'admin_scan' => $is_admin,
+                'payment_id' => $payment_id
+            ];
+            
+            // Clear payment session
+            unset($_SESSION['payment_session']);
+            
+            error_log("Redirecting to payment_success.php");
+            
+            // Redirect to success page
+            header("Location: payment_success.php");
+            exit();
+            
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $error = "Payment processing failed. Please try again.";
+            error_log("Payment Error: " . $e->getMessage());
+            error_log("Error Trace: " . $e->getTraceAsString());
         }
-        
-        if (!$error) {
-            // Process the payment
-            try {
-                error_log("Starting payment transaction...");
-                $pdo->beginTransaction();
-                
-                // Get payment amount from any available field
-                $payment_amount = $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0;
-                $transaction_id = $payment_session['transaction_id'];
-                
-                error_log("Payment Amount: $payment_amount, Transaction ID: $transaction_id");
-                
-                // 1. Update bill status
-                error_log("Updating bill status...");
-                $stmt = $pdo->prepare("UPDATE bills SET 
-                                      payment_status = 'paid', 
-                                      status = 'completed', 
-                                      paid_at = NOW() 
-                                      WHERE id = ?");
-                $stmt->execute([$bill['id']]);
-                error_log("Bill updated. Rows affected: " . $stmt->rowCount());
-                
-                // 2. Insert payment record
-                error_log("Inserting payment record...");
-                $stmt = $pdo->prepare("INSERT INTO payments (
-                                      bill_id, 
-                                      customer_id, 
-                                      amount, 
-                                      payment_method, 
-                                      payment_date,
-                                      transaction_id,
-                                      status,
-                                      created_by
-                                      ) VALUES (?, ?, ?, 'esewa', CURDATE(), ?, 'completed', ?)");
-                
-                $result = $stmt->execute([
-                    $bill['id'],
-                    $user_id,
-                    $payment_amount,
-                    $transaction_id,
-                    $user_id
-                ]);
-                
-                if ($result) {
-                    $payment_id = $pdo->lastInsertId();
-                    error_log("✅ Payment inserted with ID: $payment_id");
-                    
-                    // 3. Create admin notification
-                    error_log("Creating notifications...");
-                    $admin_message = "eSewa Payment Received - Amount: ₹" . number_format($payment_amount, 2) . 
-                                    " - From: " . $_SESSION['full_name'] . 
-                                    " - Bill: #" . $bill['bill_number'] . 
-                                    " - Transaction ID: " . $transaction_id;
-                    
-                    if ($is_admin) {
-                        $admin_message .= " - Via: Admin QR Scan";
-                    }
-                    
-                    // Insert into admin_notifications if table exists
-                    try {
-                        $stmt = $pdo->prepare("INSERT INTO admin_notifications (title, message, type) VALUES (?, ?, 'payment')");
-                        $stmt->execute(['Payment Received via eSewa', $admin_message]);
-                        error_log("Admin notification created");
-                    } catch (Exception $e) {
-                        error_log("Note: Could not create admin notification (table might not exist): " . $e->getMessage());
-                    }
-                    
-                    // 4. Create user notification
-                    $user_message = "Payment Successful - Amount: ₹" . number_format($payment_amount, 2) . 
-                                   " - Bill: #" . $bill['bill_number'] . 
-                                   " - Transaction ID: " . $transaction_id;
-                    
-                    try {
-                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Payment Successful', ?, 'payment')");
-                        $stmt->execute([$user_id, $user_message]);
-                        error_log("User notification created");
-                    } catch (Exception $e) {
-                        error_log("Note: Could not create user notification: " . $e->getMessage());
-                    }
-                    
-                    // Commit transaction
-                    $pdo->commit();
-                    error_log("✅ Transaction committed successfully!");
-                    
-                    // Success - redirect
-                    unset($_SESSION['payment_session']);
-                    $_SESSION['payment_success'] = [
-                        'transaction_id' => $transaction_id,
-                        'amount' => $payment_amount,
-                        'bill_number' => $bill['bill_number'],
-                        'admin_scan' => $is_admin
-                    ];
-                    
-                    error_log("Redirecting to success page...");
-                    
-                    if ($is_admin) {
-                        header("Location: payment_success.php?admin_scan=1");
-                    } else {
-                        header("Location: payment_success.php");
-                    }
-                    exit();
-                    
-                } else {
-                    $pdo->rollBack();
-                    $error = "Payment insertion failed. Please try again.";
-                    error_log("❌ Payment insertion failed");
-                }
-                
-            } catch (Exception $e) {
-                if (isset($pdo) && $pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                $error = "Payment processing error: " . $e->getMessage();
-                error_log("❌ Payment error: " . $e->getMessage());
-                error_log("Error trace: " . $e->getTraceAsString());
-            }
-        }
+    } else {
+        $error = "Invalid credentials. Use: Mobile: 9800000001, MPIN: 1234";
+        error_log("Invalid credentials entered");
     }
 }
 
-// Generate QR code data
-$qr_data = PaymentConfig::generateEsewaQRData(
-    $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0,
-    $payment_session['transaction_id']
-);
+// Generate QR code
+$qr_data = PaymentConfig::generateEsewaQRData($bill['amount'], $payment_session['transaction_id']);
+$qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" . urlencode($qr_data);
 
-// Generate QR code URL
-$qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" . 
-         urlencode($qr_data) . "&choe=UTF-8&chld=L|2";
+// Flush debug buffer
+ob_end_flush();
 ?>
 
 <!DOCTYPE html>
@@ -239,12 +209,12 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        .esewa-container {
+        .payment-container {
             max-width: 900px;
             margin: 2rem auto;
         }
         
-        .esewa-header {
+        .payment-header {
             background: linear-gradient(135deg, #53c41a 0%, #389e0d 100%);
             color: white;
             padding: 2rem;
@@ -252,64 +222,13 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
             text-align: center;
         }
         
-        .esewa-body {
+        .payment-body {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 2rem;
             padding: 2rem;
             background: white;
             border-radius: 0 0 10px 10px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
-        
-        .payment-form-section {
-            border-right: 1px solid #eee;
-            padding-right: 2rem;
-        }
-        
-        .payment-details-section {
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 8px;
-        }
-        
-        .qr-section {
-            grid-column: 1 / -1;
-            margin-top: 2rem;
-            padding-top: 2rem;
-            border-top: 1px solid #eee;
-            text-align: center;
-        }
-        
-        .demo-credentials {
-            background: #fff3cd;
-            padding: 1rem;
-            border-radius: 5px;
-            margin: 1rem 0;
-            border-left: 4px solid #ffc107;
-        }
-        
-        .qr-code-container {
-            display: inline-block;
-            padding: 15px;
-            background: white;
-            border-radius: 10px;
-            border: 2px solid #53c41a;
-            margin: 1rem 0;
-        }
-        
-        .payment-detail-item {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 0.8rem;
-            padding-bottom: 0.8rem;
-            border-bottom: 1px solid #eee;
-        }
-        
-        .header-icon {
-            width: 3rem;
-            height: 3rem;
-            margin-bottom: 1rem;
         }
         
         .alert {
@@ -324,256 +243,204 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
             color: #721c24;
         }
         
-        .alert-success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
+        .payment-detail {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.8rem;
+            padding-bottom: 0.8rem;
+            border-bottom: 1px solid #eee;
         }
         
-        .debug-info {
-            background: #f0f0f0;
-            padding: 10px;
-            margin: 10px 0;
-            border-left: 4px solid #3498db;
-            font-family: monospace;
-            font-size: 12px;
+        .qr-container {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 2rem;
+            border-top: 1px solid #eee;
+            grid-column: 1 / -1;
         }
         
-        /* Make form submission obvious */
-        form:focus-within {
-            border: 2px solid #3498db;
-            padding: 10px;
-            border-radius: 5px;
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
 <body>
-    <header class="header">
-        <div class="container">
-            <nav class="navbar">
-                <div class="logo">BillPay Pro</div>
-                <ul class="nav-links">
-                    <li><a href="dashboard.php">Dashboard</a></li>
-                    <li><a href="bills.php">My Bills</a></li>
-                    <li><a href="payment.php" style="color: #3498db;">Make Payment</a></li>
-                    <li><a href="payment_history.php">Payment History</a></li>
-                    <li style="display: flex; align-items: center;">
-                        <div class="user-avatar">
-                            <?php 
-                            $names = explode(' ', $_SESSION['full_name']);
-                            $initials = '';
-                            foreach ($names as $n) {
-                                $initials .= strtoupper(substr($n, 0, 1));
-                            }
-                            echo substr($initials, 0, 2);
-                            ?>
-                        </div>
-                        <span><?php echo $_SESSION['full_name']; ?></span>
-                        <a href="logout.php" style="margin-left: 15px; color: white;">Logout</a>
-                    </li>
-                </ul>
-            </nav>
-        </div>
-    </header>
-
+    <?php include '../includes/header.php'; ?>
+    
+    <!-- Debug Section -->
+    <div style="background: #f0f0f0; padding: 10px; margin: 10px; border: 2px solid red; display: none;" id="debugInfo">
+        <h4>Debug Information:</h4>
+        <p>Session ID: <?php echo session_id(); ?></p>
+        <p>User ID: <?php echo $_SESSION['user_id']; ?></p>
+        <p>Bill ID: <?php echo $payment_session['bill_id']; ?></p>
+        <p>Transaction ID: <?php echo $payment_session['transaction_id']; ?></p>
+        <p>Bill Amount: <?php echo $bill['amount']; ?></p>
+        <p>POST Method Used: <?php echo $_SERVER['REQUEST_METHOD']; ?></p>
+        <?php if ($_SERVER['REQUEST_METHOD'] == 'POST'): ?>
+            <p>Form Submitted: YES</p>
+            <p>Mobile: <?php echo $_POST['mobile'] ?? 'Not set'; ?></p>
+            <p>MPIN: <?php echo $_POST['mpin'] ?? 'Not set'; ?></p>
+        <?php else: ?>
+            <p>Form Submitted: NO</p>
+        <?php endif; ?>
+    </div>
+    
     <div class="container">
-        <div class="esewa-container">
-            <!-- eSewa Header -->
-            <div class="esewa-header">
-                <i data-lucide="smartphone" class="header-icon"></i>
+        <div class="payment-container">
+            <div class="payment-header">
+                <i data-lucide="smartphone" style="width: 3rem; height: 3rem; margin-bottom: 1rem;"></i>
                 <h1>eSewa Payment Gateway</h1>
-                <p>Secure Digital Payment - Demo Environment</p>
+                <p>Secure Digital Payment</p>
             </div>
             
-            <!-- Main Content -->
-            <div class="esewa-body">
+            <div class="payment-body">
                 <!-- Left: Payment Form -->
-                <div class="payment-form-section">
-                    <h3>eSewa Login</h3>
+                <div>
+                    <h3>Login to Pay</h3>
                     
                     <?php if ($error): ?>
                         <div class="alert alert-danger">
-                            <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                            <?php echo $error; ?>
+                            <i data-lucide="alert-circle"></i> <?php echo $error; ?>
                         </div>
                     <?php endif; ?>
                     
-                    <form method="POST" action="" id="esewaForm">
+                    <form method="POST" id="paymentForm">
                         <div class="form-group">
-                            <label for="mobile">
-                                <i data-lucide="phone" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                                Mobile Number
-                            </label>
-                            <input type="text" id="mobile" name="mobile" class="form-control" 
-                                   value="9800000001" placeholder="98XXXXXXXX" required>
+                            <label><i data-lucide="phone"></i> Mobile Number</label>
+                            <input type="text" name="mobile" value="9800000001" required class="form-control">
                         </div>
                         
                         <div class="form-group">
-                            <label for="mpin">
-                                <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                                MPIN
-                            </label>
-                            <input type="password" id="mpin" name="mpin" class="form-control" 
-                                   value="1234" maxlength="4" required>
+                            <label><i data-lucide="lock"></i> MPIN</label>
+                            <input type="password" name="mpin" value="1234" required maxlength="4" class="form-control">
                         </div>
                         
-                        <button type="submit" name="simulate_payment" class="btn" style="width: 100%; padding: 1rem; background: #53c41a;">
-                            <i data-lucide="credit-card" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>
-                            Pay ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
+                        <button type="submit" name="simulate_payment" class="btn btn-success" style="width: 100%; padding: 1rem;">
+                            <i data-lucide="credit-card"></i> Pay ₹<?php echo number_format($bill['amount'], 2); ?>
                         </button>
                     </form>
                     
-                    <div class="demo-credentials">
-                        <h4>
-                            <i data-lucide="info" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                            Demo Credentials:
-                        </h4>
-                        <p><strong>Customer Mobile:</strong> 9800000001, 9800000002, 9800000003</p>
-                        <p><strong>MPIN:</strong> 1234</p>
-                        <p><strong>Admin Scanner:</strong> mobile: admin, mpin: admin123</p>
-                    </div>
-                    
-                    <!-- Debug info -->
-                    <div class="debug-info">
-                        <strong>Debug Info:</strong><br>
-                        User ID: <?php echo $user_id; ?><br>
-                        Bill ID: <?php echo $bill['id']; ?><br>
-                        Bill Number: <?php echo $bill['bill_number']; ?><br>
-                        Transaction ID: <?php echo $payment_session['transaction_id']; ?><br>
-                        Amount: ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
+                    <div style="background: #fff3cd; padding: 1rem; border-radius: 5px; margin-top: 1rem;">
+                        <h4><i data-lucide="info"></i> Demo Credentials</h4>
+                        <p><strong>Customer:</strong> 9800000001 / 1234</p>
+                        <p><strong>Admin:</strong> admin / admin123</p>
                     </div>
                 </div>
                 
                 <!-- Right: Payment Details -->
-                <div class="payment-details-section">
-                    <h3>
-                        <i data-lucide="receipt" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                        Payment Summary
-                    </h3>
-                    
-                    <div class="payment-detail-item">
-                        <span>Bill Number:</span>
-                        <strong><?php echo $bill['bill_number']; ?></strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
-                        <span>Service:</span>
-                        <strong><?php echo isset($bill['bill_type']) ? ucfirst($bill['bill_type']) : 'General'; ?></strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
-                        <span>Customer:</span>
-                        <strong><?php echo $_SESSION['full_name']; ?></strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
-                        <span>Amount:</span>
-                        <strong style="color: #e74c3c; font-size: 1.2em;">
-                            ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
-                        </strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
-                        <span>Transaction ID:</span>
-                        <strong><?php echo $payment_session['transaction_id']; ?></strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
-                        <span>Date:</span>
-                        <strong><?php echo date('M d, Y h:i A'); ?></strong>
-                    </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 2px solid #53c41a;">
-                        <div class="payment-detail-item" style="font-size: 1.1em;">
-                            <strong>Total Payable:</strong>
-                            <strong style="color: #27ae60; font-size: 1.3em;">
-                                ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
-                            </strong>
+                <div>
+                    <h3><i data-lucide="receipt"></i> Payment Summary</h3>
+                    <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px;">
+                        <div class="payment-detail">
+                            <span>Bill Number:</span>
+                            <strong><?php echo $bill['bill_number']; ?></strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Service:</span>
+                            <strong><?php echo ucfirst($bill['bill_type'] ?? 'General'); ?></strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Customer:</span>
+                            <strong><?php echo $_SESSION['full_name']; ?></strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Customer Code:</span>
+                            <strong><?php echo $bill['customer_code'] ?? 'N/A'; ?></strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Amount:</span>
+                            <strong style="color: #e74c3c;">₹<?php echo number_format($bill['amount'], 2); ?></strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Transaction ID:</span>
+                            <strong><?php echo $payment_session['transaction_id']; ?></strong>
                         </div>
                     </div>
                 </div>
                 
-                <!-- QR Code Section -->
-                <div class="qr-section">
-                    <h3>
-                        <i data-lucide="qrcode" style="width: 1.5rem; height: 1.5rem; margin-right: 10px;"></i>
-                        QR Code Payment
-                    </h3>
-                    <p>Scan this QR code with eSewa app to pay instantly</p>
-                    
-                    <div class="qr-code-container">
-                        <img src="<?php echo $qr_url; ?>" alt="eSewa QR Code" style="width: 250px; height: 250px;">
+                <!-- QR Code -->
+                <div class="qr-container">
+                    <h3><i data-lucide="qrcode"></i> QR Code Payment</h3>
+                    <div style="display: inline-block; padding: 15px; background: white; border: 2px solid #53c41a; border-radius: 10px;">
+                        <img src="<?php echo $qr_url; ?>" alt="QR Code" style="width: 250px; height: 250px;">
                     </div>
+                    <p style="margin-top: 1rem;">Scan this QR code with eSewa app</p>
                 </div>
             </div>
         </div>
     </div>
-
-    <footer class="footer">
-        <div class="container">
-            <p>&copy; <?php echo date('Y'); ?> Online Billing System - BCA Project | Tribhuvan University</p>
-        </div>
-    </footer>
-
+    
+    <?php include '../includes/footer.php'; ?>
+    
     <script>
-        // Form submission handler with debug
-        document.getElementById('esewaForm').addEventListener('submit', function(e) {
-            console.log('Form submission started');
-            
-            const submitBtn = this.querySelector('button[type="submit"]');
-            if (submitBtn) {
-                submitBtn.disabled = true;
-                submitBtn.innerHTML = '<i data-lucide="loader-2" style="width: 1.2rem; height: 1.2rem; margin-right: 8px; animation: spin 1s linear infinite;"></i>Processing Payment...';
-                
-                // Show loading message
-                const loadingMsg = document.createElement('div');
-                loadingMsg.id = 'loadingMessage';
-                loadingMsg.style.cssText = 'background: #3498db; color: white; padding: 10px; margin: 10px 0; border-radius: 5px; text-align: center;';
-                loadingMsg.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing your payment...';
-                this.parentNode.insertBefore(loadingMsg, this.nextSibling);
-            }
-        });
-        
-        // Add CSS animation for spinner
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-            /* Highlight form on focus */
-            input:focus {
-                border-color: #53c41a !important;
-                box-shadow: 0 0 0 2px rgba(83, 196, 26, 0.2) !important;
-            }
-        `;
-        document.head.appendChild(style);
-        
-        // Initialize icons
         lucide.createIcons();
         
-        // Debug log
-        console.log('Payment page loaded successfully');
-        console.log('Form ready for submission');
-        
-        // Add click handler to test button
-        document.addEventListener('DOMContentLoaded', function() {
-            const form = document.getElementById('esewaForm');
-            if (form) {
-                console.log('Form found, adding event listeners');
-                
-                // Also add a test button for debugging
-                const testBtn = document.createElement('button');
-                testBtn.type = 'button';
-                testBtn.textContent = 'Test Form Submission';
-                testBtn.style.cssText = 'background: #e74c3c; color: white; padding: 10px; margin: 10px 0; border: none; border-radius: 5px;';
-                testBtn.onclick = function() {
-                    console.log('Test button clicked, submitting form...');
-                    form.submit();
-                };
-                form.appendChild(testBtn);
-            }
+        document.getElementById('paymentForm').addEventListener('submit', function(e) {
+            console.log('Payment form submit triggered (legacy handler)');
+            const btn = this.querySelector('button[type="submit"]');
+            btn.disabled = true;
+            btn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing Payment...';
+            
+            // Add loading indicator
+            const loading = document.createElement('div');
+            loading.id = 'loadingIndicator';
+            loading.style.cssText = 'background: #3498db; color: white; padding: 10px; margin: 10px 0; border-radius: 5px; text-align: center;';
+            loading.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing your payment, please wait...';
+            this.parentNode.insertBefore(loading, this.nextSibling);
         });
+    </script>
+    
+    <script>
+        // Debug: Check if form is submitting
+        console.log('Payment page loaded');
+
+        // Check if form exists
+        const form = document.getElementById('paymentForm');
+        if (form) {
+            console.log('Form found, adding event listeners');
+            
+            // Add multiple event listeners
+            form.addEventListener('submit', function(e) {
+                console.log('Form submit event triggered');
+                
+                const btn = this.querySelector('button[type="submit"]');
+                if (btn) {
+                    console.log('Button found, disabling...');
+                    btn.disabled = true;
+                    btn.innerHTML = '<i data-lucide="loader-2"></i> Processing...';
+                    
+                    // Force icon refresh
+                    setTimeout(() => {
+                        lucide.createIcons();
+                    }, 100);
+                }
+                
+                // Don't prevent default
+                console.log('Form submission proceeding...');
+            });
+            
+            // Also try direct form.onsubmit
+            form.onsubmit = function() {
+                console.log('onsubmit triggered');
+                return true; // Allow form submission
+            };
+        } else {
+            console.error('Form not found!');
+        }
+
+        // Check for any JavaScript errors
+        window.onerror = function(msg, url, line) {
+            console.error('JavaScript Error:', msg, 'at', url, ':', line);
+            
+            // Show error on page
+            const errorDiv = document.createElement('div');
+            errorDiv.style.cssText = 'background: #721c24; color: white; padding: 10px; margin: 10px; border-radius: 5px;';
+            errorDiv.innerHTML = '<strong>JavaScript Error:</strong> ' + msg + ' at line ' + line;
+            document.body.prepend(errorDiv);
+            
+            return false;
+        };
     </script>
 </body>
 </html>

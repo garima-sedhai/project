@@ -89,6 +89,15 @@ $notifications = $stmt->fetchAll();
 $stmt = $pdo->prepare("SELECT COUNT(*) as new_notifications FROM notifications WHERE type = 'system' AND is_read = FALSE");
 $stmt->execute();
 $new_notifications_count = $stmt->fetch()['new_notifications'];
+
+// Get unread admin notifications count for header bell icon
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as unread_count FROM admin_notifications WHERE is_read = 0");
+    $stmt->execute();
+    $unread_admin_notifications = $stmt->fetch()['unread_count'] ?? 0;
+} catch (Exception $e) {
+    $unread_admin_notifications = 0;
+}
 ?>
 
 <!DOCTYPE html>
@@ -408,6 +417,43 @@ $new_notifications_count = $stmt->fetch()['new_notifications'];
         .logout-btn:hover {
             background: rgba(255,255,255,0.3);
         }
+        
+        /* Notification bell styles */
+        .notification-bell {
+            position: relative;
+            margin-right: 10px;
+        }
+        
+        .notification-bell a {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-decoration: none;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background-color 0.2s;
+        }
+        
+        .notification-bell a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        .notification-count {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: #e74c3c;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 0.7rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -426,6 +472,16 @@ $new_notifications_count = $stmt->fetch()['new_notifications'];
                 </ul>
             </nav>
             <div class="user-info">
+                <!-- Notification Bell -->
+                <div class="notification-bell">
+                    <a href="notifications.php" title="Notifications">
+                        <i data-lucide="bell"></i>
+                        <?php if ($unread_admin_notifications > 0): ?>
+                            <span class="notification-count"><?php echo $unread_admin_notifications; ?></span>
+                        <?php endif; ?>
+                    </a>
+                </div>
+                
                 <div class="user-avatar">
                     <?php 
                     $names = explode(' ', $_SESSION['full_name']);

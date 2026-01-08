@@ -1,0 +1,181 @@
+[08-Jan-2026 14:43:24 Europe/Berlin] ========== PAYMENT PAGE ACCESSED ==========
+[08-Jan-2026 14:43:24 Europe/Berlin] Time: 2026-01-08 14:43:24
+[08-Jan-2026 14:43:24 Europe/Berlin] Session ID: 6vr7jt41ojl2r4j16hci7fcflq
+[08-Jan-2026 14:43:24 Europe/Berlin] User ID in session: 4
+[08-Jan-2026 14:43:24 Europe/Berlin] POST Data: Array
+(
+)
+
+[08-Jan-2026 14:43:24 Europe/Berlin] GET Data: Array
+(
+)
+
+[08-Jan-2026 14:43:24 Europe/Berlin] Session Data: Array
+(
+    [LAST_ACTIVITY] => 1767879275
+    [CREATED] => 1767878926
+    [csrf_token] => 5340a71f6bab7945a6175fc20a9567e82d14d3270fff826050890bc46a4a4cb9
+    [csrf_token_time] => 1767878926
+    [user_id] => 4
+    [email] => sedhaigarima183@gmail.com
+    [full_name] => Garima Sedhai
+    [is_admin] => 0
+    [customer_code] => CUST00004
+    [last_activity] => 1767878938
+    [payment_session] => Array
+        (
+            [bill_id] => 2
+            [amount] => 5150.00
+            [payment_method] => esewa
+            [transaction_id] => TXN20260108191910482
+            [created_at] => 1767879250
+        )
+
+)
+
+[08-Jan-2026 14:43:27 Europe/Berlin] ========== PAYMENT PAGE ACCESSED ==========
+[08-Jan-2026 14:43:27 Europe/Berlin] Time: 2026-01-08 14:43:27
+[08-Jan-2026 14:43:27 Europe/Berlin] Session ID: 6vr7jt41ojl2r4j16hci7fcflq
+[08-Jan-2026 14:43:27 Europe/Berlin] User ID in session: 4
+[08-Jan-2026 14:43:27 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 14:43:27 Europe/Berlin] GET Data: Array
+(
+)
+
+[08-Jan-2026 14:43:27 Europe/Berlin] Session Data: Array
+(
+    [LAST_ACTIVITY] => 1767879804
+    [CREATED] => 1767878926
+    [csrf_token] => 5340a71f6bab7945a6175fc20a9567e82d14d3270fff826050890bc46a4a4cb9
+    [csrf_token_time] => 1767878926
+    [user_id] => 4
+    [email] => sedhaigarima183@gmail.com
+    [full_name] => Garima Sedhai
+    [is_admin] => 0
+    [customer_code] => CUST00004
+    [last_activity] => 1767878938
+    [payment_session] => Array
+        (
+            [bill_id] => 2
+            [amount] => 5150.00
+            [payment_method] => esewa
+            [transaction_id] => TXN20260108191910482
+            [created_at] => 1767879250
+        )
+
+)
+
+[08-Jan-2026 14:43:31 Europe/Berlin] ========== PAYMENT PAGE ACCESSED ==========
+[08-Jan-2026 14:43:31 Europe/Berlin] Time: 2026-01-08 14:43:31
+[08-Jan-2026 14:43:31 Europe/Berlin] Session ID: 6vr7jt41ojl2r4j16hci7fcflq
+[08-Jan-2026 14:43:31 Europe/Berlin] User ID in session: 4
+[08-Jan-2026 14:43:31 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 14:43:31 Europe/Berlin] GET Data: Array
+(
+)
+
+[08-Jan-2026 14:43:31 Europe/Berlin] Session Data: Array
+(
+    [LAST_ACTIVITY] => 1767879807
+    [CREATED] => 1767878926
+    [csrf_token] => 5340a71f6bab7945a6175fc20a9567e82d14d3270fff826050890bc46a4a4cb9
+    [csrf_token_time] => 1767878926
+    [user_id] => 4
+    [email] => sedhaigarima183@gmail.com
+    [full_name] => Garima Sedhai
+    [is_admin] => 0
+    [customer_code] => CUST00004
+    [last_activity] => 1767878938
+    [payment_session] => Array
+        (
+            [bill_id] => 2
+            [amount] => 5150.00
+            [payment_method] => esewa
+            [transaction_id] => TXN20260108191910482
+            [created_at] => 1767879250
+        )
+
+)
+
+[08-Jan-2026 14:43:36 Europe/Berlin] ========== PAYMENT PAGE ACCESSED ==========
+[08-Jan-2026 14:43:36 Europe/Berlin] Time: 2026-01-08 14:43:36
+[08-Jan-2026 14:43:36 Europe/Berlin] Session ID: 6vr7jt41ojl2r4j16hci7fcflq
+[08-Jan-2026 14:43:36 Europe/Berlin] User ID in session: 4
+[08-Jan-2026 14:43:36 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 14:43:36 Europe/Berlin] GET Data: Array
+(
+)
+
+[08-Jan-2026 14:43:36 Europe/Berlin] Session Data: Array
+(
+    [LAST_ACTIVITY] => 1767879811
+    [CREATED] => 1767878926
+    [csrf_token] => 5340a71f6bab7945a6175fc20a9567e82d14d3270fff826050890bc46a4a4cb9
+    [csrf_token_time] => 1767878926
+    [user_id] => 4
+    [email] => sedhaigarima183@gmail.com
+    [full_name] => Garima Sedhai
+    [is_admin] => 0
+    [customer_code] => CUST00004
+    [last_activity] => 1767878938
+    [payment_session] => Array
+        (
+            [bill_id] => 2
+            [amount] => 5150.00
+            [payment_method] => esewa
+            [transaction_id] => TXN20260108191910482
+            [created_at] => 1767879250
+        )
+
+)
+
+[08-Jan-2026 14:43:39 Europe/Berlin] ========== PAYMENT PAGE ACCESSED ==========
+[08-Jan-2026 14:43:39 Europe/Berlin] Time: 2026-01-08 14:43:39
+[08-Jan-2026 14:43:39 Europe/Berlin] Session ID: 6vr7jt41ojl2r4j16hci7fcflq
+[08-Jan-2026 14:43:39 Europe/Berlin] User ID in session: 4
+[08-Jan-2026 14:43:39 Europe/Berlin] POST Data: Array
+(
+)
+
+[08-Jan-2026 14:43:39 Europe/Berlin] GET Data: Array
+(
+)
+
+[08-Jan-2026 14:43:39 Europe/Berlin] Session Data: Array
+(
+    [LAST_ACTIVITY] => 1767879816
+    [CREATED] => 1767878926
+    [csrf_token] => 5340a71f6bab7945a6175fc20a9567e82d14d3270fff826050890bc46a4a4cb9
+    [csrf_token_time] => 1767878926
+    [user_id] => 4
+    [email] => sedhaigarima183@gmail.com
+    [full_name] => Garima Sedhai
+    [is_admin] => 0
+    [customer_code] => CUST00004
+    [last_activity] => 1767878938
+    [payment_session] => Array
+        (
+            [bill_id] => 2
+            [amount] => 5150.00
+            [payment_method] => esewa
+            [transaction_id] => TXN20260108191910482
+            [created_at] => 1767879250
+        )
+
+)
+
