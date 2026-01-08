@@ -166,6 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="stylesheet" href="../assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
+        /* Main content styles */
         .manage-container {
             padding: 20px;
             max-width: 1400px;
@@ -348,7 +349,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: bold;
         }
         
-        .user-info {
+        .user-header-info {
             flex: 1;
         }
         
@@ -492,10 +493,173 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-right: 5px;
             vertical-align: middle;
         }
+        
+        @media (max-width: 768px) {
+            .filter-form {
+                grid-template-columns: 1fr;
+            }
+            
+            .header-section {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
+            }
+            
+            .users-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
-    <?php include '../includes/header.php'; ?>
+    <!-- Using the header from admin/index.php -->
+    <?php
+    // We'll use the same header logic from admin/index.php
+    ?>
+    
+    <!-- Header Navigation Styles -->
+    <style>
+        .header-nav {
+            background: #075B5E;
+            padding: 1rem 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: white;
+            text-decoration: none;
+        }
+        
+        .nav-links {
+            display: flex;
+            list-style: none;
+            gap: 1.5rem;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .nav-links a {
+            color: rgba(255,255,255,0.9);
+            text-decoration: none;
+            padding: 0.5rem 0;
+            transition: color 0.2s;
+            position: relative;
+        }
+        
+        .nav-links a:hover {
+            color: white;
+        }
+        
+        .nav-links a.active {
+            color: white;
+        }
+        
+        .nav-links a.active::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: white;
+        }
+        
+        .header-user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: white;
+        }
+        
+        .user-avatar-small {
+            width: 40px;
+            height: 40px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+        
+        .logout-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            font-family: inherit;
+            font-size: 1rem;
+        }
+        
+        .logout-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        @media (max-width: 768px) {
+            .nav-container {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
+            }
+            
+            .nav-links {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            
+            .header-user-info {
+                flex-direction: column;
+                gap: 10px;
+            }
+        }
+    </style>
+    
+    <!-- Custom Header Navigation (same as index.php) -->
+    <header class="header-nav">
+        <div class="nav-container">
+            <a href="index.php" class="logo">Admin Dashboard</a>
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="index.php">Dashboard</a></li>
+                    <li><a href="manage_bills.php">Manage Bills</a></li>
+                    <li><a href="manage_services.php">Manage Services</a></li>
+                    <li><a href="reports.php">Manage Reports</a></li>
+                    <li><a href="manage_users.php" class="active">Manage Users</a></li>
+                    <li><a href="approve_users.php">Approve Users</a></li>
+                </ul>
+            </nav>
+            <div class="header-user-info">
+                <div class="user-avatar-small">
+                    <?php 
+                    $names = explode(' ', $_SESSION['full_name']);
+                    $initials = '';
+                    foreach ($names as $n) {
+                        $initials .= strtoupper(substr($n, 0, 1));
+                    }
+                    echo substr($initials, 0, 2);
+                    ?>
+                </div>
+                <span><?php echo $_SESSION['full_name']; ?></span>
+                <a href="logout.php" class="logout-btn">Logout</a>
+            </div>
+        </div>
+    </header>
     
     <div class="manage-container">
         <div class="header-section">
@@ -576,7 +740,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 echo substr($initials, 0, 2);
                                 ?>
                             </div>
-                            <div class="user-info">
+                            <div class="user-header-info">
                                 <h3 class="user-name"><?php echo htmlspecialchars($customer['full_name']); ?></h3>
                                 <p class="user-email"><?php echo htmlspecialchars($customer['email']); ?></p>
                                 <p class="registration-time">
@@ -685,8 +849,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
     
-    <?php include '../includes/footer.php'; ?>
-    
     <script>
         // Initialize Lucide icons
         lucide.createIcons();
@@ -715,6 +877,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             form.addEventListener('submit', function(e) {
                 if (!confirm('Are you sure you want to resend verification email to this user?')) {
                     e.preventDefault();
+                }
+            });
+        });
+        
+        // Highlight current page in navigation
+        document.addEventListener('DOMContentLoaded', function() {
+            const currentPage = window.location.pathname.split('/').pop();
+            const navLinks = document.querySelectorAll('.nav-links a');
+            
+            navLinks.forEach(link => {
+                const linkPage = link.getAttribute('href');
+                if (linkPage === currentPage) {
+                    link.classList.add('active');
+                } else {
+                    link.classList.remove('active');
                 }
             });
         });

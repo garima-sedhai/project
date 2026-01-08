@@ -1,0 +1,30 @@
+# project/.htaccess
+RewriteEngine On
+RewriteBase /project/
+
+# Prevent directory listing
+Options -Indexes
+
+# If the request is for index.php, serve it directly
+RewriteRule ^index\.php$ - [L]
+
+# Redirect all other requests to index.php
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [L]
+
+# Security headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options nosniff
+    Header set X-Frame-Options DENY
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# Protect sensitive files
+<FilesMatch "\.(config|inc|sql|log)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Set default index file
+DirectoryIndex index.php

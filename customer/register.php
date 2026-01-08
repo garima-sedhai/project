@@ -1,345 +1,291 @@
 <?php
-// REMOVE THIS LINE: session_start();
-require_once '../includes/config.php';
-require_once '../includes/db_connection.php';
+// For customer files:
+$base_path = dirname(__DIR__);
+require_once $base_path . '/includes/config.php';
+require_once $base_path . '/includes/db_connection.php';
+require_once $base_path . '/includes/email_functions.php';
+
+$page_title = "Customer Registration";
+$hide_sidebar = true;
+$hide_footer = true;
 
 // Check if user is already logged in
 if (isset($_SESSION['user_id'])) {
-    if ($_SESSION['is_admin']) {
+    if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']) {
         header("Location: ../admin/index.php");
+        exit;
     } else {
         header("Location: dashboard.php");
+        exit;
     }
-    exit();
 }
-// ... rest of your register.php code
 
-$error = '';
-$success = '';
-$step = isset($_GET['step']) ? $_GET['step'] : 1;
-$email = isset($_SESSION['register_email']) ? $_SESSION['register_email'] : '';
+$errors = [];
+$success = false;
+$form_data = [];
 
-// Handle registration step 1: Basic info
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['register_step1'])) {
-    $full_name = trim($_POST['full_name']);
-    $email = trim($_POST['email']);
-    $phone = trim($_POST['phone']);
-    $password = $_POST['password'];
-    $confirm_password = $_POST['confirm_password'];
-    $address = trim($_POST['address']);
+// Generate username from email
+function generate_username($email) {
+    $username = strtok($email, '@');
+    $username = preg_replace('/[^a-zA-Z0-9]/', '', $username);
     
-    // Validation
-    if (empty($full_name) || empty($email) || empty($phone) || empty($password)) {
-        $error = "Please fill all required fields";
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $error = "Please enter a valid email address";
-    } elseif ($password !== $confirm_password) {
-        $error = "Passwords do not match";
-    } elseif (strlen($password) < 6) {
-        $error = "Password must be at least 6 characters long";
-    } else {
+    // Check if username already exists and append number if needed
+    global $pdo;
+    $base_username = $username;
+    $counter = 1;
+    
+    while (true) {
+        $stmt = $pdo->prepare("SELECT id FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        
+        if (!$stmt->fetch()) {
+            return $username;
+        }
+        
+        $username = $base_username . $counter;
+        $counter++;
+        
+        if ($counter > 100) {
+            return $base_username . time();
+        }
+    }
+}
+
+// Process registration form
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Sanitize input
+    $form_data = array_map(function($value) {
+        return htmlspecialchars(trim($value), ENT_QUOTES, 'UTF-8');
+    }, $_POST);
+    
+    // Validate required fields
+    $required_fields = ['full_name', 'email', 'phone', 'password', 'confirm_password', 'address'];
+    
+    foreach ($required_fields as $field) {
+        if (empty($form_data[$field])) {
+            $errors[] = ucfirst(str_replace('_', ' ', $field)) . " is required.";
+        }
+    }
+    
+    // Validate email
+    if (!empty($form_data['email']) && !filter_var($form_data['email'], FILTER_VALIDATE_EMAIL)) {
+        $errors[] = "Please enter a valid email address.";
+    }
+    
+    // Check if email already exists
+    if (empty($errors) && !empty($form_data['email'])) {
         try {
-            // Check if email already exists
-            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
-            $stmt->execute([$email]);
+            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? AND is_deleted = 0");
+            $stmt->execute([$form_data['email']]);
             if ($stmt->fetch()) {
-                $error = "Email already registered. Please login or use a different email.";
-            } else {
-                // Generate verification code
-                $verification_code = rand(100000, 999999);
-                $verification_expiry = date('Y-m-d H:i:s', time() + 600); // 10 minutes expiry
-                
-                // Generate customer code
-                $customer_code = 'CUST' . date('Ymd') . str_pad(rand(1, 999), 3, '0', STR_PAD_LEFT);
-                
-                // Save to session for next step
-                $_SESSION['register_data'] = [
-                    'full_name' => $full_name,
-                    'email' => $email,
-                    'phone' => $phone,
-                    'password' => password_hash($password, PASSWORD_DEFAULT),
-                    'address' => $address,
-                    'verification_code' => $verification_code,
-                    'verification_expiry' => $verification_expiry,
-                    'customer_code' => $customer_code
-                ];
-                $_SESSION['register_email'] = $email;
-                
-                // Send verification email
-                $subject = "Verify Your Email - BillPay Pro";
-                $message = "
-                    <html>
-                    <head>
-                        <style>
-                            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                            .header { background: #075B5E; color: white; padding: 20px; text-align: center; }
-                            .content { background: #f9f9f9; padding: 20px; }
-                            .verification-code { 
-                                background: #075B5E; 
-                                color: white; 
-                                padding: 15px; 
-                                text-align: center; 
-                                font-size: 24px; 
-                                font-weight: bold; 
-                                letter-spacing: 5px;
-                                margin: 20px 0;
-                                border-radius: 5px;
-                            }
-                            .footer { background: #eee; padding: 10px; text-align: center; font-size: 12px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class='container'>
-                            <div class='header'>
-                                <h2>BillPay Pro</h2>
-                            </div>
-                            <div class='content'>
-                                <h3>Dear $full_name,</h3>
-                                <p>Thank you for registering with BillPay Pro!</p>
-                                <p>Your verification code is:</p>
-                                <div class='verification-code'>$verification_code</div>
-                                <p>Enter this code on the verification page to complete your registration.</p>
-                                <p><strong>Note:</strong> This code will expire in 10 minutes.</p>
-                                <p>If you didn't create an account with us, please ignore this email.</p>
-                            </div>
-                            <div class='footer'>
-                                <p>This is an automated message from BillPay Pro System.</p>
-                            </div>
-                        </div>
-                    </body>
-                    </html>
-                ";
-                
-                $headers = "MIME-Version: 1.0" . "\r\n";
-                $headers .= "Content-type:text/html;charset=UTF-8" . "\r\n";
-                $headers .= "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">" . "\r\n";
-                $headers .= "Reply-To: " . SMTP_FROM_EMAIL . "\r\n";
-                
-                if (mail($email, $subject, $message, $headers)) {
-                    // Redirect to verification step
-                    header("Location: register.php?step=2");
-                    exit();
-                } else {
-                    $error = "Failed to send verification email. Please try again.";
-                }
+                $errors[] = "This email is already registered. Please use a different email or try to login.";
             }
+        } catch (PDOException $e) {
+            $errors[] = "Database error: " . $e->getMessage();
+        }
+    }
+    
+    // Validate password
+    if (!empty($form_data['password']) && !empty($form_data['confirm_password'])) {
+        if (strlen($form_data['password']) < 6) {
+            $errors[] = "Password must be at least 6 characters long.";
+        }
+        
+        if ($form_data['password'] !== $form_data['confirm_password']) {
+            $errors[] = "Passwords do not match.";
+        }
+    }
+    
+    // Validate terms agreement
+    if (!isset($form_data['terms'])) {
+        $errors[] = "You must agree to the Terms and Conditions.";
+    }
+    
+    // If no errors, proceed with registration
+    if (empty($errors)) {
+        try {
+            // Start transaction
+            $pdo->beginTransaction();
+            
+            // Generate username from email
+            $username = generate_username($form_data['email']);
+            
+            // Hash password
+            $hashed_password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+            
+            // Generate OTP
+            $otp = rand(100000, 999999);
+            $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+            
+            // Insert user data with ONLY columns that exist in your table
+            $stmt = $pdo->prepare("
+                INSERT INTO users (
+                    username, full_name, email, password, phone, address, 
+                    user_type, account_status, email_verified, 
+                    approved_by_admin, admin_approved, registration_status,
+                    is_admin, is_active, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'customer', 
+                         'pending', 0, 0, 0, 'pending', 0, 1, NOW())
+            ");
+            
+            $stmt->execute([
+                $username,
+                $form_data['full_name'],
+                $form_data['email'],
+                $hashed_password,
+                $form_data['phone'],
+                $form_data['address']
+            ]);
+            
+            $user_id = $pdo->lastInsertId();
+            
+            // Also store in verification_otps table for backup
+            $stmt = $pdo->prepare("
+                INSERT INTO verification_otps (email, otp, type, expires_at) 
+                VALUES (?, ?, 'registration', ?)
+            ");
+            $stmt->execute([$form_data['email'], $otp, $otp_expiry]);
+            
+            // Send OTP email using your existing function
+            $email_sent = sendOTPEmail($form_data['email'], $form_data['full_name'], $otp);
+            
+            if (!$email_sent) {
+                throw new Exception("Failed to send OTP email. Please try again.");
+            }
+            
+            // Commit transaction
+            $pdo->commit();
+            
+            // Store in session for OTP verification
+            $_SESSION['temp_user_id'] = $user_id;
+            $_SESSION['temp_email'] = $form_data['email'];
+            $_SESSION['temp_full_name'] = $form_data['full_name'];
+            
+            // Redirect to OTP verification
+            header("Location: verify_otp.php");
+            exit();
+            
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = "Registration failed: " . $e->getMessage();
+            error_log("Registration error: " . $e->getMessage());
         } catch (Exception $e) {
-            $error = "Registration error. Please try again.";
+            $pdo->rollBack();
+            $errors[] = $e->getMessage();
             error_log("Registration error: " . $e->getMessage());
         }
     }
 }
-
-// Handle verification step
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_email'])) {
-    $entered_code = trim($_POST['verification_code']);
-    $register_data = $_SESSION['register_data'] ?? null;
-    
-    if (!$register_data) {
-        $error = "Session expired. Please start registration again.";
-        $step = 1;
-    } elseif (empty($entered_code)) {
-        $error = "Please enter verification code";
-    } elseif ($entered_code != $register_data['verification_code']) {
-        $error = "Invalid verification code";
-    } elseif (strtotime($register_data['verification_expiry']) < time()) {
-        $error = "Verification code has expired. Please register again.";
-        unset($_SESSION['register_data'], $_SESSION['register_email']);
-        $step = 1;
-    } else {
-        try {
-            // Create user in database
-            $stmt = $pdo->prepare("INSERT INTO users (
-                full_name, email, phone, password, address, customer_code,
-                email_verified, verification_code, verification_expiry,
-                admin_approved, registration_status, is_admin, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, TRUE, NULL, NULL, FALSE, 'verified', FALSE, TRUE)");
-            
-            $success = $stmt->execute([
-                $register_data['full_name'],
-                $register_data['email'],
-                $register_data['phone'],
-                $register_data['password'],
-                $register_data['address'],
-                $register_data['customer_code']
-            ]);
-            
-            if ($success) {
-                $user_id = $pdo->lastInsertId();
-                
-                // Send notification to admin
-                $admin_message = "New user registered: " . $register_data['full_name'] . " (" . $register_data['email'] . "). Please review and approve.";
-                $stmt = $pdo->prepare("INSERT INTO notifications (type, title, message) VALUES ('system', 'New User Registration', ?)");
-                $stmt->execute([$admin_message]);
-                
-                // Clear session data
-                unset($_SESSION['register_data'], $_SESSION['register_email']);
-                
-                // Set success message in session
-                $_SESSION['registration_success'] = true;
-                
-                // Redirect to login page
-                header("Location: login.php?success=registered");
-                exit();
-            } else {
-                $error = "Failed to create account. Please try again.";
-            }
-        } catch (Exception $e) {
-            $error = "Account creation error. Please try again.";
-            error_log("Account creation error: " . $e->getMessage());
-        }
-    }
-}
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register - BillPay Pro</title>
-    <link rel="stylesheet" href="../assets/css/style.css">
+    <title>Customer Registration - BillPay Pro</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            height: 100vh;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
         .register-container {
-            width: 100%;
-            max-width: 500px;
-            padding: 20px;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
         }
         
-        .register-box {
+        .register-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .register-header h1 {
+            color: #075B5E;
+            margin-bottom: 0.5rem;
+        }
+        
+        .register-card {
             background: white;
             border-radius: 10px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            padding: 40px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
         }
         
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .logo h1 {
-            color: #075B5E;
-            margin: 0;
-            font-size: 28px;
-        }
-        
-        .logo p {
-            color: #666;
-            margin: 5px 0 0;
-        }
-        
-        .step-indicator {
-            display: flex;
-            justify-content: center;
-            margin-bottom: 30px;
-        }
-        
-        .step {
-            display: flex;
-            align-items: center;
-            margin: 0 10px;
-            color: #999;
-        }
-        
-        .step.active {
-            color: #075B5E;
-        }
-        
-        .step-number {
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            background: #eee;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 10px;
-            font-weight: bold;
-        }
-        
-        .step.active .step-number {
+        .card-header {
             background: #075B5E;
             color: white;
+            padding: 1.5rem;
+            text-align: center;
+        }
+        
+        .card-body {
+            padding: 2rem;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
         }
         
         .form-group {
-            margin-bottom: 20px;
+            flex: 1;
+            margin-bottom: 1rem;
         }
         
         .form-group label {
             display: block;
-            margin-bottom: 5px;
-            color: #555;
+            margin-bottom: 0.5rem;
             font-weight: 500;
-        }
-        
-        .form-group label .required {
-            color: #e74c3c;
+            color: #333;
         }
         
         .form-control {
             width: 100%;
-            padding: 12px;
+            padding: 0.75rem;
             border: 1px solid #ddd;
             border-radius: 5px;
-            font-size: 16px;
+            font-size: 1rem;
             transition: border-color 0.3s;
         }
         
         .form-control:focus {
-            outline: none;
             border-color: #075B5E;
-            box-shadow: 0 0 0 2px rgba(7, 91, 94, 0.1);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(7, 91, 94, 0.1);
+        }
+        
+        .required::after {
+            content: " *";
+            color: #e74c3c;
         }
         
         .btn {
-            width: 100%;
-            padding: 12px;
             background: #075B5E;
             color: white;
             border: none;
+            padding: 1rem 2rem;
             border-radius: 5px;
-            font-size: 16px;
-            font-weight: 600;
+            font-size: 1rem;
+            font-weight: 500;
             cursor: pointer;
             transition: background-color 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
         .btn:hover {
             background: #0a7c80;
         }
         
-        .btn-secondary {
-            background: #95a5a6;
-        }
-        
-        .btn-secondary:hover {
-            background: #7f8c8d;
+        .btn-block {
+            width: 100%;
+            justify-content: center;
         }
         
         .alert {
-            padding: 15px;
+            padding: 1rem;
             border-radius: 5px;
-            margin-bottom: 20px;
-            font-size: 14px;
-        }
-        
-        .alert-success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            margin-bottom: 1rem;
         }
         
         .alert-danger {
@@ -348,239 +294,270 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_email'])) {
             border: 1px solid #f5c6cb;
         }
         
-        .verification-info {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: #f8f9fa;
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .registration-process {
+            background: #f0f7f7;
+            padding: 1.5rem;
             border-radius: 5px;
+            margin-top: 2rem;
         }
         
-        .verification-info p {
-            margin: 10px 0;
-            color: #666;
+        .process-steps {
+            list-style: none;
+            padding: 0;
         }
         
-        .verification-code-inputs {
+        .process-steps li {
+            margin-bottom: 1rem;
             display: flex;
-            justify-content: center;
-            gap: 10px;
-            margin: 20px 0;
+            align-items: flex-start;
+            gap: 0.5rem;
         }
         
-        .verification-code-inputs input {
-            width: 50px;
-            height: 60px;
-            text-align: center;
-            font-size: 24px;
-            font-weight: bold;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-        }
-        
-        .verification-code-inputs input:focus {
-            border-color: #075B5E;
-            outline: none;
+        .process-steps li i {
+            color: #075B5E;
+            margin-top: 0.25rem;
         }
         
         .login-link {
             text-align: center;
-            margin-top: 20px;
-            font-size: 14px;
+            margin-top: 1rem;
+            color: #666;
         }
         
         .login-link a {
             color: #075B5E;
             text-decoration: none;
+            font-weight: 500;
         }
         
         .login-link a:hover {
             text-decoration: underline;
         }
         
-        .password-strength {
-            margin-top: 5px;
-            font-size: 12px;
+        .terms-checkbox {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            margin: 1.5rem 0;
         }
         
-        .strength-weak { color: #e74c3c; }
-        .strength-medium { color: #f39c12; }
-        .strength-strong { color: #27ae60; }
+        .terms-checkbox input[type="checkbox"] {
+            margin-top: 0.25rem;
+        }
+        
+        .terms-checkbox label {
+            margin: 0;
+        }
     </style>
 </head>
 <body>
-    <div class="register-container">
-        <div class="register-box">
-            <div class="logo">
-                <h1>BillPay Pro</h1>
-                <p>Create Your Account</p>
+    <header class="header">
+        <div class="container">
+            <nav class="navbar">
+                <div class="logo">BillPay Pro</div>
+                <ul class="nav-links">
+                    <li><a href="../index.php">Home</a></li>
+                    <li><a href="login.php">Login</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="register-container">
+            <!-- Header -->
+            <div class="register-header">
+                <h1><i data-lucide="user-plus"></i> Customer Registration</h1>
+                <p>Create your account to start using BillPay Pro</p>
             </div>
             
-            <div class="step-indicator">
-                <div class="step <?php echo $step == 1 ? 'active' : ''; ?>">
-                    <div class="step-number">1</div>
-                    <span>Basic Info</span>
-                </div>
-                <div class="step <?php echo $step == 2 ? 'active' : ''; ?>">
-                    <div class="step-number">2</div>
-                    <span>Verify Email</span>
-                </div>
-            </div>
-            
-            <?php if ($error): ?>
+            <!-- Messages -->
+            <?php if (!empty($errors)): ?>
                 <div class="alert alert-danger">
-                    <?php echo htmlspecialchars($error); ?>
+                    <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <strong>Please fix the following errors:</strong>
+                    <ul style="margin: 0.5rem 0 0 1.5rem;">
+                        <?php foreach ($errors as $error): ?>
+                            <li><?php echo $error; ?></li>
+                        <?php endforeach; ?>
+                    </ul>
                 </div>
             <?php endif; ?>
             
-            <?php if ($step == 1): ?>
-                <!-- Registration Form Step 1 -->
-                <form method="POST" action="">
-                    <div class="form-group">
-                        <label for="full_name">Full Name <span class="required">*</span></label>
-                        <input type="text" id="full_name" name="full_name" class="form-control" 
-                               value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>" 
-                               required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="email">Email Address <span class="required">*</span></label>
-                        <input type="email" id="email" name="email" class="form-control" 
-                               value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
-                               required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="phone">Phone Number <span class="required">*</span></label>
-                        <input type="tel" id="phone" name="phone" class="form-control" 
-                               value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>" 
-                               required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="address">Address</label>
-                        <textarea id="address" name="address" class="form-control" rows="3"><?php echo isset($_POST['address']) ? htmlspecialchars($_POST['address']) : ''; ?></textarea>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="password">Password <span class="required">*</span></label>
-                        <input type="password" id="password" name="password" class="form-control" required>
-                        <div id="password-strength" class="password-strength"></div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="confirm_password">Confirm Password <span class="required">*</span></label>
-                        <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
-                        <div id="password-match" class="password-strength"></div>
-                    </div>
-                    
-                    <button type="submit" name="register_step1" class="btn">Continue</button>
+            <?php if ($success): ?>
+                <div class="alert alert-success">
+                    <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    <strong>Registration Successful!</strong>
+                    <p>Your account has been created. Please check your email for the OTP to verify your account.</p>
+                </div>
+            <?php endif; ?>
+            
+            <!-- Registration Form -->
+            <div class="register-card">
+                <div class="card-header">
+                    <h2 style="margin: 0;">Create Your Account</h2>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="full_name" class="required">Full Name</label>
+                                <input type="text" class="form-control" id="full_name" name="full_name" 
+                                       value="<?php echo $form_data['full_name'] ?? ''; ?>" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="email" class="required">Email Address</label>
+                                <input type="email" class="form-control" id="email" name="email" 
+                                       value="<?php echo $form_data['email'] ?? ''; ?>" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="phone" class="required">Phone Number</label>
+                                <input type="tel" class="form-control" id="phone" name="phone" 
+                                       value="<?php echo $form_data['phone'] ?? ''; ?>" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="password" class="required">Password</label>
+                                <input type="password" class="form-control" id="password" name="password" required>
+                                <small style="color: #666;">Minimum 6 characters</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="confirm_password" class="required">Confirm Password</label>
+                                <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="address" class="required">Address</label>
+                            <textarea class="form-control" id="address" name="address" rows="2" required><?php echo $form_data['address'] ?? ''; ?></textarea>
+                        </div>
+                        
+                        <div class="terms-checkbox">
+                            <input type="checkbox" id="terms" name="terms" required>
+                            <label for="terms">
+                                I agree to the <a href="<?php echo SITE_URL; ?>terms.php" target="_blank">Terms and Conditions</a> and 
+                                <a href="<?php echo SITE_URL; ?>privacy.php" target="_blank">Privacy Policy</a>
+                            </label>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-block">
+                            <i data-lucide="user-plus"></i> Create Account
+                        </button>
+                    </form>
                     
                     <div class="login-link">
-                        Already have an account? <a href="login.php">Login here</a>
+                        <p>Already have an account? <a href="login.php">Login here</a></p>
                     </div>
-                </form>
-                
-                <script>
-                    // Password strength checker
-                    const passwordInput = document.getElementById('password');
-                    const confirmInput = document.getElementById('confirm_password');
-                    const strengthText = document.getElementById('password-strength');
-                    const matchText = document.getElementById('password-match');
-                    
-                    passwordInput.addEventListener('input', function() {
-                        const password = this.value;
-                        let strength = '';
-                        let color = '';
-                        
-                        if (password.length === 0) {
-                            strength = '';
-                        } else if (password.length < 6) {
-                            strength = 'Weak (at least 6 characters)';
-                            color = 'strength-weak';
-                        } else if (password.length < 8) {
-                            strength = 'Medium';
-                            color = 'strength-medium';
-                        } else {
-                            // Check for complexity
-                            const hasUpper = /[A-Z]/.test(password);
-                            const hasLower = /[a-z]/.test(password);
-                            const hasNumbers = /\d/.test(password);
-                            const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password);
-                            
-                            const complexity = [hasUpper, hasLower, hasNumbers, hasSpecial].filter(Boolean).length;
-                            
-                            if (complexity >= 3) {
-                                strength = 'Strong';
-                                color = 'strength-strong';
-                            } else if (complexity >= 2) {
-                                strength = 'Medium';
-                                color = 'strength-medium';
-                            } else {
-                                strength = 'Weak (add variety)';
-                                color = 'strength-weak';
-                            }
-                        }
-                        
-                        strengthText.textContent = strength;
-                        strengthText.className = 'password-strength ' + color;
-                        
-                        // Check password match
-                        checkPasswordMatch();
-                    });
-                    
-                    confirmInput.addEventListener('input', checkPasswordMatch);
-                    
-                    function checkPasswordMatch() {
-                        const password = passwordInput.value;
-                        const confirm = confirmInput.value;
-                        
-                        if (confirm.length === 0) {
-                            matchText.textContent = '';
-                        } else if (password === confirm) {
-                            matchText.textContent = '✓ Passwords match';
-                            matchText.className = 'password-strength strength-strong';
-                        } else {
-                            matchText.textContent = '✗ Passwords do not match';
-                            matchText.className = 'password-strength strength-weak';
-                        }
-                    }
-                </script>
-                
-            <?php elseif ($step == 2): ?>
-                <!-- Verification Form Step 2 -->
-                <div class="verification-info">
-                    <h3>Verify Your Email</h3>
-                    <p>We've sent a 6-digit verification code to:</p>
-                    <p><strong><?php echo htmlspecialchars($email); ?></strong></p>
-                    <p>Enter the code below to complete your registration.</p>
-                    <p><em>Note: The code expires in 10 minutes</em></p>
                 </div>
-                
-                <form method="POST" action="">
-                    <div class="form-group">
-                        <label for="verification_code">Verification Code <span class="required">*</span></label>
-                        <input type="text" id="verification_code" name="verification_code" class="form-control" 
-                               maxlength="6" pattern="\d{6}" required 
-                               placeholder="Enter 6-digit code">
-                    </div>
-                    
-                    <button type="submit" name="verify_email" class="btn">Verify & Create Account</button>
-                    
-                    <div style="margin-top: 20px; text-align: center;">
-                        <a href="register.php?step=1" class="btn btn-secondary">Back to Registration</a>
-                    </div>
-                </form>
-                
-                <script>
-                    // Auto-focus on verification code field
-                    document.getElementById('verification_code').focus();
-                    
-                    // Auto-tab between digits (if you want to implement 6 separate inputs)
-                    // For now, using single input for simplicity
-                </script>
-            <?php endif; ?>
+            </div>
+            
+            <!-- Registration Process Info -->
+            <div class="registration-process">
+                <h3><i data-lucide="info"></i> Registration Process</h3>
+                <ul class="process-steps">
+                    <li>
+                        <i data-lucide="check-circle"></i>
+                        <div>
+                            <strong>Step 1: Fill Registration Form</strong>
+                            <p>Provide your details in the form above</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="mail"></i>
+                        <div>
+                            <strong>Step 2: Verify Email</strong>
+                            <p>Check your email for OTP and verify your account</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="shield-check"></i>
+                        <div>
+                            <strong>Step 3: Admin Approval</strong>
+                            <p>Wait for admin to approve your account (usually within 24 hours)</p>
+                        </div>
+                    </li>
+                    <li>
+                        <i data-lucide="log-in"></i>
+                        <div>
+                            <strong>Step 4: Login & Access</strong>
+                            <p>Once approved, login and access your dashboard</p>
+                        </div>
+                    </li>
+                </ul>
+            </div>
         </div>
     </div>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
+        </div>
+    </footer>
+
+    <script>
+        lucide.createIcons();
+        
+        // Password strength indicator
+        const passwordInput = document.getElementById('password');
+        const confirmPasswordInput = document.getElementById('confirm_password');
+        
+        passwordInput.addEventListener('input', function() {
+            const password = this.value;
+            const confirmPassword = confirmPasswordInput.value;
+            
+            // Check if passwords match
+            if (confirmPassword && password !== confirmPassword) {
+                confirmPasswordInput.style.borderColor = '#e74c3c';
+            } else if (confirmPassword) {
+                confirmPasswordInput.style.borderColor = '#27ae60';
+            }
+        });
+        
+        confirmPasswordInput.addEventListener('input', function() {
+            const password = passwordInput.value;
+            const confirmPassword = this.value;
+            
+            if (password && confirmPassword && password !== confirmPassword) {
+                this.style.borderColor = '#e74c3c';
+            } else if (password && confirmPassword) {
+                this.style.borderColor = '#27ae60';
+            } else {
+                this.style.borderColor = '#ddd';
+            }
+        });
+        
+        // Form submission validation
+        document.querySelector('form').addEventListener('submit', function(e) {
+            const password = passwordInput.value;
+            const confirmPassword = confirmPasswordInput.value;
+            
+            if (password.length < 6) {
+                e.preventDefault();
+                alert('Password must be at least 6 characters long.');
+                passwordInput.focus();
+                return false;
+            }
+            
+            if (password !== confirmPassword) {
+                e.preventDefault();
+                alert('Passwords do not match. Please check and try again.');
+                confirmPasswordInput.focus();
+                return false;
+            }
+            
+            return true;
+        });
+    </script>
 </body>
 </html>

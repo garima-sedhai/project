@@ -98,10 +98,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - BillPay Pro</title>
     <link rel="stylesheet" href="../assets/css/style.css">
+    <!-- Lucide Icons CDN -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        /* Keep the same CSS styles as above */
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: white;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             height: 100vh;
             margin: 0;
@@ -118,64 +119,66 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         
         .login-box {
             background: white;
-            border-radius: 10px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.05);
+            padding: 2rem;
+            border: 1px solid #e0e0e0;
         }
         
         .logo {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 1.5rem;
         }
         
         .logo h1 {
             color: #075B5E;
             margin: 0;
-            font-size: 28px;
+            font-size: 1.8rem;
         }
         
         .logo p {
             color: #666;
             margin: 5px 0 0;
+            font-size: 0.95rem;
         }
         
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 1.5rem;
         }
         
         .form-group label {
             display: block;
-            margin-bottom: 5px;
-            color: #555;
+            margin-bottom: 0.5rem;
+            color: #075B5E;
             font-weight: 500;
+            font-size: 0.9rem;
         }
         
         .form-control {
             width: 100%;
-            padding: 12px;
+            padding: 0.6rem;
             border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
+            border-radius: 4px;
+            font-size: 0.95rem;
             transition: border-color 0.3s;
         }
         
         .form-control:focus {
             outline: none;
             border-color: #075B5E;
-            box-shadow: 0 0 0 2px rgba(7, 91, 94, 0.1);
         }
         
         .btn {
             width: 100%;
-            padding: 12px;
+            padding: 0.6rem 1.2rem;
             background: #075B5E;
             color: white;
             border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: 500;
             cursor: pointer;
-            transition: background-color 0.3s;
+            transition: background-color 0.3s ease;
         }
         
         .btn:hover {
@@ -183,28 +186,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
         
         .login-links {
-            margin-top: 20px;
+            margin-top: 1.5rem;
             text-align: center;
-            font-size: 14px;
+            font-size: 0.85rem;
         }
         
         .login-links a {
             color: #075B5E;
             text-decoration: none;
-            margin: 0 10px;
+            margin: 0 0.5rem;
             transition: color 0.3s;
         }
         
         .login-links a:hover {
-            color: #0a7c80;
             text-decoration: underline;
         }
         
         .alert {
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            font-size: 14px;
+            padding: 0.75rem 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            font-size: 0.85rem;
         }
         
         .alert-success {
@@ -221,8 +223,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         
         .admin-login-link {
             text-align: center;
-            margin-top: 20px;
-            font-size: 14px;
+            margin-top: 1rem;
+            font-size: 0.85rem;
         }
         
         .admin-login-link a {
@@ -241,13 +243,28 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         
         .toggle-password {
             position: absolute;
-            right: 10px;
+            right: 8px;
             top: 50%;
             transform: translateY(-50%);
-            background: none;
+            background: transparent;
             border: none;
             cursor: pointer;
-            font-size: 16px;
+            padding: 4px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+        
+        .toggle-password:hover {
+            background: #f5f5f5;
+        }
+        
+        .toggle-password .lucide-icon {
+            width: 1.2rem;
+            height: 1.2rem;
             color: #666;
         }
     </style>
@@ -262,35 +279,46 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             
             <?php if ($success): ?>
                 <div class="alert alert-success">
+                    <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle; color: #155724;"></i>
                     <?php echo htmlspecialchars($success); ?>
                 </div>
             <?php endif; ?>
             
             <?php if ($error): ?>
                 <div class="alert alert-danger">
+                    <i data-lucide="alert-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle; color: #721c24;"></i>
                     <?php echo htmlspecialchars($error); ?>
                 </div>
             <?php endif; ?>
             
             <form method="POST" action="">
                 <div class="form-group">
-                    <label for="email">Email Address</label>
+                    <label for="email">
+                        <i data-lucide="mail" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Email Address
+                    </label>
                     <input type="email" id="email" name="email" class="form-control" 
                            value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" 
                            required>
                 </div>
                 
                 <div class="form-group">
-                    <label for="password">Password</label>
+                    <label for="password">
+                        <i data-lucide="lock" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                        Password
+                    </label>
                     <div class="password-container">
                         <input type="password" id="password" name="password" class="form-control" required>
-                        <button type="button" class="toggle-password" id="togglePassword">
-                            <span id="toggleIcon">👁️</span>
+                        <button type="button" class="toggle-password" id="togglePassword" aria-label="Toggle password visibility">
+                            <i data-lucide="eye" class="lucide-icon" id="toggleIcon"></i>
                         </button>
                     </div>
                 </div>
                 
-                <button type="submit" class="btn">Login</button>
+                <button type="submit" class="btn">
+                    <i data-lucide="log-in" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    Login
+                </button>
             </form>
             
             <div class="login-links">
@@ -305,18 +333,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     </div>
     
     <script>
+        // Initialize Lucide Icons
+        lucide.createIcons();
+        
         // Auto-focus on email field
         document.getElementById('email').focus();
         
-        // Show/hide password functionality
+        // Show/hide password functionality with lucide icons
         const togglePassword = document.getElementById('togglePassword');
         const passwordInput = document.getElementById('password');
         const toggleIcon = document.getElementById('toggleIcon');
         
         togglePassword.addEventListener('click', function() {
-            const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
-            passwordInput.setAttribute('type', type);
-            toggleIcon.textContent = type === 'password' ? '👁️' : '🙈';
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                toggleIcon.setAttribute('data-lucide', 'eye-off');
+            } else {
+                passwordInput.type = 'password';
+                toggleIcon.setAttribute('data-lucide', 'eye');
+            }
+            // Re-render the icon
+            lucide.createIcons();
         });
         
         // Prevent form submission on enter key in password toggle button

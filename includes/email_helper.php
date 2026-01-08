@@ -3,19 +3,19 @@
  * Email Helper Functions for BillPay Pro with PHPMailer Support
  */
 
-// Include PHPMailer classes
+// First, load config to get constants
+if (!defined('SMTP_ENABLED')) {
+    require_once __DIR__ . '/config.php';
+}
+
+// Include PHPMailer classes from local includes/phpmailer folder
+require_once __DIR__ . '/phpmailer/Exception.php';
+require_once __DIR__ . '/phpmailer/PHPMailer.php';
+require_once __DIR__ . '/phpmailer/SMTP.php';
+
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
-
-// Load PHPMailer
-require_once __DIR__ . '/../vendor/autoload.php'; // If using Composer
-// OR manual require if not using Composer
-if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
-    require_once __DIR__ . '/../PHPMailer/src/Exception.php';
-    require_once __DIR__ . '/../PHPMailer/src/PHPMailer.php';
-    require_once __DIR__ . '/../PHPMailer/src/SMTP.php';
-}
 
 /**
  * Send email using PHPMailer with SMTP
@@ -39,7 +39,7 @@ function send_email($to, $subject, $body, $is_html = true) {
         $mail->Port       = SMTP_PORT;
         
         // Enable debug if needed
-        if (DEBUG_MODE && EMAIL_DEBUG) {
+        if (defined('DEBUG_MODE') && DEBUG_MODE && defined('EMAIL_DEBUG') && EMAIL_DEBUG) {
             $mail->SMTPDebug = SMTP::DEBUG_SERVER;
             $mail->Debugoutput = function($str, $level) {
                 error_log("PHPMailer: $str");
@@ -83,6 +83,7 @@ function send_email($to, $subject, $body, $is_html = true) {
  */
 function send_approval_email($email, $full_name) {
     $subject = "Account Approved - BillPay Pro";
+    
     $message = '
     <!DOCTYPE html>
     <html>
@@ -232,6 +233,7 @@ function send_approval_email($email, $full_name) {
  */
 function send_verification_email($email, $full_name, $verification_code) {
     $subject = "Verify Your Email - BillPay Pro";
+    
     $message = '
     <!DOCTYPE html>
     <html>
@@ -384,16 +386,16 @@ function test_email_configuration() {
  * Check if email service is configured
  */
 function is_email_configured() {
-    return SMTP_ENABLED && 
-           !empty(SMTP_HOST) && 
-           !empty(SMTP_USERNAME) && 
-           !empty(SMTP_PASSWORD) &&
-           !empty(SMTP_FROM_EMAIL) &&
-           !empty(SMTP_FROM_NAME);
+    return defined('SMTP_ENABLED') && SMTP_ENABLED && 
+           defined('SMTP_HOST') && !empty(SMTP_HOST) && 
+           defined('SMTP_USERNAME') && !empty(SMTP_USERNAME) && 
+           defined('SMTP_PASSWORD') && !empty(SMTP_PASSWORD) &&
+           defined('SMTP_FROM_EMAIL') && !empty(SMTP_FROM_EMAIL) &&
+           defined('SMTP_FROM_NAME') && !empty(SMTP_FROM_NAME);
 }
 
 // Test email configuration on load (only in debug mode)
-if (DEBUG_MODE && EMAIL_DEBUG) {
+if (defined('DEBUG_MODE') && DEBUG_MODE && defined('EMAIL_DEBUG') && EMAIL_DEBUG) {
     error_log("Email helper loaded. Configuration status: " . (is_email_configured() ? "OK" : "INCOMPLETE"));
 }
 ?>

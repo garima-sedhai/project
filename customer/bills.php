@@ -2,7 +2,7 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
+//session_start();
 require_once $base_path . '/includes/db_connection.php';
 // ... rest of code
 // Redirect if not logged in as customer
