@@ -1,0 +1,98 @@
+[08-Jan-2026 14:08:38 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:08:38 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:08:38 Europe/Berlin] POST Data: Array
+(
+)
+
+[08-Jan-2026 18:53:38 Asia/Kathmandu] Payment session found for user: 4
+[08-Jan-2026 18:53:38 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:53:38 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 4
+[08-Jan-2026 18:53:38 Asia/Kathmandu] Bill found: #BL202601089472 - Amount: 5150.00
+[08-Jan-2026 14:08:42 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:08:42 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:08:42 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:53:42 Asia/Kathmandu] Payment session found for user: 4
+[08-Jan-2026 18:53:42 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:53:42 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 4
+[08-Jan-2026 18:53:42 Asia/Kathmandu] Bill found: #BL202601089472 - Amount: 5150.00
+[08-Jan-2026 18:53:42 Asia/Kathmandu] === FORM SUBMITTED ===
+[08-Jan-2026 14:08:46 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:08:46 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:08:46 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:53:46 Asia/Kathmandu] Payment session found for user: 4
+[08-Jan-2026 18:53:46 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:53:46 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 4
+[08-Jan-2026 18:53:46 Asia/Kathmandu] Bill found: #BL202601089472 - Amount: 5150.00
+[08-Jan-2026 18:53:46 Asia/Kathmandu] === FORM SUBMITTED ===
+[08-Jan-2026 14:08:51 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:08:51 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:08:51 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:53:51 Asia/Kathmandu] Payment session found for user: 4
+[08-Jan-2026 18:53:51 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:53:51 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 4
+[08-Jan-2026 18:53:51 Asia/Kathmandu] Bill found: #BL202601089472 - Amount: 5150.00
+[08-Jan-2026 18:53:51 Asia/Kathmandu] === FORM SUBMITTED ===
+[08-Jan-2026 14:08:54 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:08:54 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:08:54 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:53:54 Asia/Kathmandu] Payment session found for user: 4
+[08-Jan-2026 18:53:54 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:53:54 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 4
+[08-Jan-2026 18:53:54 Asia/Kathmandu] Bill found: #BL202601089472 - Amount: 5150.00
+[08-Jan-2026 18:53:54 Asia/Kathmandu] === FORM SUBMITTED ===
+[08-Jan-2026 14:10:08 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:10:08 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:10:08 Europe/Berlin] POST Data: Array
+(
+    [simulate_payment] => 1
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:55:08 Asia/Kathmandu] Payment session found for user: 2
+[08-Jan-2026 18:55:08 Asia/Kathmandu] Bill ID in session: 2
+[08-Jan-2026 18:55:08 Asia/Kathmandu] Executing bill query with bill_id: 2 and user_id: 2
+[08-Jan-2026 18:55:08 Asia/Kathmandu] ERROR: No pending bill found
+[08-Jan-2026 14:10:15 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:10:15 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:10:15 Europe/Berlin] POST Data: Array
+(
+)
+
+[08-Jan-2026 18:55:15 Asia/Kathmandu] Payment session found for user: 2
+[08-Jan-2026 18:55:15 Asia/Kathmandu] Bill ID in session: 6
+[08-Jan-2026 18:55:15 Asia/Kathmandu] Executing bill query with bill_id: 6 and user_id: 2
+[08-Jan-2026 18:55:15 Asia/Kathmandu] Bill found: #TEST-20260108184444 - Amount: 500.00
+[08-Jan-2026 14:10:18 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:10:18 Europe/Berlin] Session ID: spgc9b50lg5mo6th9t6vd4vj99
+[08-Jan-2026 14:10:18 Europe/Berlin] POST Data: Array
+(
+    [mobile] => 9800000001
+    [mpin] => 1234
+)
+
+[08-Jan-2026 18:55:18 Asia/Kathmandu] Payment session found for user: 2
+[08-Jan-2026 18:55:18 Asia/Kathmandu] Bill ID in session: 6
+[08-Jan-2026 18:55:18 Asia/Kathmandu] Executing bill query with bill_id: 6 and user_id: 2
+[08-Jan-2026 18:55:18 Asia/Kathmandu] Bill found: #TEST-20260108184444 - Amount: 500.00
+[08-Jan-2026 18:55:18 Asia/Kathmandu] === FORM SUBMITTED ===

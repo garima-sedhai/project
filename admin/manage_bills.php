@@ -146,18 +146,59 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     $message = "Bill created successfully! Bill Number: <strong>$bill_number</strong>";
                     $message_type = "success";
                     
-                    // Create notification for user
-                    $notification_success = DBHelper::createNotification(
-                        $pdo, 
-                        $user_id, 
-                        'New Bill Generated', 
-                        "A new bill of ₹" . number_format($final_amount, 2) . " has been generated for " . $bill_type,
-                        'bill'
-                    );
-                    
-                    if (!$notification_success) {
-                        error_log("Notification creation failed for bill: $bill_number");
+                    // =========== UPDATED NOTIFICATION CODE ===========
+                    // SIMPLE DIRECT NOTIFICATION INSERT - NO DBHelper
+                    try {
+                        $notification_title = "New Bill #$bill_number";
+                        $notification_message = "A bill of ₹" . number_format($final_amount, 2) . " has been generated for: " . $bill_type;
+                        $notification_link = "../customer/view_bill.php?bill_id=" . $bill_id;
+                        
+                        error_log("DEBUG: Attempting to create notification for user_id: $user_id");
+                        
+                        // Direct SQL insert
+                        $sql = "INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at) 
+                                VALUES (?, ?, ?, ?, ?, 0, NOW())";
+                        
+                        $stmt = $pdo->prepare($sql);
+                        $result = $stmt->execute([
+                            $user_id, 
+                            $notification_title, 
+                            $notification_message, 
+                            'bill',
+                            $notification_link
+                        ]);
+                        
+                        if ($result) {
+                            error_log("SUCCESS: Notification created successfully for user_id: $user_id");
+                            // Also verify by checking
+                            $checkStmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ?");
+                            $checkStmt->execute([$user_id]);
+                            $checkResult = $checkStmt->fetch();
+                            error_log("DEBUG: Total notifications for user_id $user_id: " . $checkResult['count']);
+                        } else {
+                            error_log("ERROR: Notification insert failed for user_id: $user_id");
+                        }
+                        
+                    } catch (Exception $e) {
+                        error_log("CRITICAL ERROR in notification creation: " . $e->getMessage());
+                        
+                        // Try alternative insert without link
+                        try {
+                            $sql = "INSERT INTO notifications (user_id, title, message, type, is_read, created_at) 
+                                    VALUES (?, ?, ?, ?, 0, NOW())";
+                            $stmt = $pdo->prepare($sql);
+                            $stmt->execute([
+                                $user_id, 
+                                "New Bill #$bill_number",
+                                "Bill amount: ₹" . number_format($final_amount, 2),
+                                'bill'
+                            ]);
+                            error_log("ALTERNATIVE: Notification created without link");
+                        } catch (Exception $e2) {
+                            error_log("ALTERNATIVE also failed: " . $e2->getMessage());
+                        }
                     }
+                    // =========== END UPDATED NOTIFICATION CODE ===========
                     
                 } else {
                     $pdo->rollBack();

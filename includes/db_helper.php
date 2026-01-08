@@ -78,11 +78,21 @@ class DBHelper {
             }
         }
         
-        // Standard insertion with all columns
+        // Check for link column
+        $hasLinkColumn = self::checkColumnExists($pdo, 'notifications', 'link');
+        
         try {
-            $sql = "INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)";
-            $stmt = $pdo->prepare($sql);
-            return $stmt->execute([$user_id, $title, $message, $type]);
+            if ($hasLinkColumn && $type == 'bill') {
+                // For bill notifications, insert without link first (link will be added later)
+                $sql = "INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $result = $stmt->execute([$user_id, $title, $message, $type]);
+            } else {
+                $sql = "INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $result = $stmt->execute([$user_id, $title, $message, $type]);
+            }
+            return $result;
         } catch (Exception $e) {
             error_log("Notification creation failed: " . $e->getMessage());
             return false;

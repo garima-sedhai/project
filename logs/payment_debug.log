@@ -1,0 +1,13 @@
+[08-Jan-2026 14:01:36 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 18:46:36 Asia/Kathmandu] Starting payment processing for user 2, bill 7
+[08-Jan-2026 18:46:36 Asia/Kathmandu] Payment amount: 500.00, Transaction ID: TXN-20260108184617424
+[08-Jan-2026 18:46:36 Asia/Kathmandu] Bill updated: 7, rows affected: 1
+[08-Jan-2026 18:46:36 Asia/Kathmandu] Payment error: SQLSTATE[23000]: Integrity constraint violation: 1452 Cannot add or update a child row: a foreign key constraint fails (`online_billing_system`.`payments`, CONSTRAINT `payments_ibfk_2` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE)
+[08-Jan-2026 18:46:36 Asia/Kathmandu] Error trace: #0 C:\xampp\htdocs\project\customer\payment_esewa.php(102): PDOStatement->execute(Array)
+#1 {main}
+[08-Jan-2026 14:01:41 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:01:47 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:01:56 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:01:59 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:02:01 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===
+[08-Jan-2026 14:02:50 Europe/Berlin] === PAYMENT ESEWA PAGE LOADED ===

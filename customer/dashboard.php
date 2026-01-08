@@ -156,9 +156,9 @@ foreach ($names as $n) {
 }
 $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
 
-// Get notification count
+// Get notification count - UPDATED for your notifications table
 try {
-    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE");
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0");
     $stmt->execute([$user_id]);
     $notification_result = $stmt->fetch();
     $notification_count = $notification_result['count'] ?? 0;
@@ -464,7 +464,8 @@ try {
                         <ul class="dropdown-menu dropdown-menu-end">
                             <li><a class="dropdown-item" href="profile.php"><i class="fas fa-user me-2"></i> My Profile</a></li>
                             <li><a class="dropdown-item" href="settings.php"><i class="fas fa-cog me-2"></i> Settings</a></li>
-                            <li><a class="dropdown-item" href="notifications.php">
+                            <!-- UPDATED: Changed from notifications.php to notification.php -->
+                            <li><a class="dropdown-item" href="notification.php">
                                 <i class="fas fa-bell me-2"></i> Notifications
                                 <?php if ($notification_count > 0): ?>
                                     <span class="badge bg-danger float-end"><?php echo $notification_count; ?></span>
@@ -511,8 +512,9 @@ try {
                                 <i class="fas fa-user"></i> Profile
                             </a>
                         </li>
+                        <!-- UPDATED: Changed from notifications.php to notification.php -->
                         <li class="nav-item">
-                            <a class="nav-link" href="notifications.php">
+                            <a class="nav-link" href="notification.php">
                                 <i class="fas fa-bell"></i> Notifications
                                 <?php if ($notification_count > 0): ?>
                                     <span class="badge bg-danger float-end"><?php echo $notification_count; ?></span>

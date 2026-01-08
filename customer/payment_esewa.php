@@ -1,16 +1,36 @@
 <?php
 session_start();
+
+// EXTREME DEBUGGING - Display all errors
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+
+// Also log errors to our project logs folder
+$log_dir = __DIR__ . '/../logs/';
+if (!file_exists($log_dir)) {
+    mkdir($log_dir, 0777, true);
+}
+ini_set('log_errors', 1);
+ini_set('error_log', $log_dir . 'payment_errors.log');
+
+error_log("=== PAYMENT ESEWA PAGE LOADED ===");
+error_log("Session ID: " . session_id());
+error_log("POST Data: " . print_r($_POST, true));
+
 require_once '../includes/config.php';
 require_once '../includes/payment_config.php';
 
 // Redirect if not logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
+    error_log("User not logged in or is admin");
     header("Location: login.php");
     exit();
 }
 
 // Check if payment session exists
 if (!isset($_SESSION['payment_session'])) {
+    error_log("No payment session found");
     header("Location: payment.php?error=no_payment_session");
     exit();
 }
@@ -18,112 +38,190 @@ if (!isset($_SESSION['payment_session'])) {
 $payment_session = $_SESSION['payment_session'];
 $user_id = $_SESSION['user_id'];
 
-// Get bill details
-$stmt = $pdo->prepare("SELECT b.*, u.full_name, u.phone, u.email, u.customer_code 
-                      FROM bills b 
-                      JOIN users u ON b.user_id = u.id 
-                      WHERE b.id = ? AND b.user_id = ? AND b.status = 'pending'");
+error_log("Payment session found for user: $user_id");
+error_log("Bill ID in session: " . ($payment_session['bill_id'] ?? 'NOT SET'));
+
+// Get bill details - FIXED: Handle all amount fields
+$stmt = $pdo->prepare("SELECT 
+    b.*, 
+    u.full_name, 
+    u.phone, 
+    u.email,
+    u.customer_code,
+    -- Get the first non-null amount value
+    COALESCE(
+        b.amount, 
+        b.final_amount, 
+        b.total_amount,
+        0
+    ) as amount,
+    u.id as user_id
+    FROM bills b 
+    JOIN users u ON b.user_id = u.id 
+    WHERE b.id = ? AND b.user_id = ? AND b.payment_status = 'pending'");
+    
+error_log("Executing bill query with bill_id: " . $payment_session['bill_id'] . " and user_id: $user_id");
+
 $stmt->execute([$payment_session['bill_id'], $user_id]);
 $bill = $stmt->fetch();
 
 if (!$bill) {
+    error_log("ERROR: No pending bill found");
     unset($_SESSION['payment_session']);
     header("Location: payment.php?error=invalid_bill");
     exit();
 }
 
-// For demo - we'll simulate the payment
-$error = '';
-$success = '';
+error_log("Bill found: #" . $bill['bill_number'] . " - Amount: " . ($bill['amount'] ?? 'NOT SET'));
 
-// Handle form submission (demo payment simulation)
+$error = '';
+$success = false;
+
+// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    error_log("=== FORM SUBMITTED ===");
+    
     if (isset($_POST['simulate_payment'])) {
         $mobile = $_POST['mobile'] ?? '';
         $mpin = $_POST['mpin'] ?? '';
         
-        // Demo validation
-        $demo_credentials = PaymentConfig::getDemoCredentials()['esewa'];
+        error_log("Credentials entered - Mobile: $mobile, MPIN: $mpin");
         
-        if (in_array($mobile, $demo_credentials['mobile']) && $mpin === '1234') {
-            // Process the payment
-            $success = processEsewaPayment($pdo, $payment_session, $bill, $user_id);
-            
-            if ($success) {
-                unset($_SESSION['payment_session']);
-                header("Location: payment_success.php?transaction_id=" . $payment_session['transaction_id'] . "&gateway=esewa");
-                exit();
-            } else {
-                $error = "Payment processing failed. Please try again.";
-            }
+        // Demo validation
+        if (($mobile === '9800000001' || $mobile === '9800000002' || $mobile === '9800000003') && $mpin === '1234') {
+            error_log("Valid customer credentials - Processing payment...");
+            $is_admin = false;
         } elseif ($mobile === 'admin' && $mpin === 'admin123') {
-            // Admin QR scanning simulation
-            $success = processEsewaPayment($pdo, $payment_session, $bill, $user_id, true);
-            
-            if ($success) {
-                unset($_SESSION['payment_session']);
-                header("Location: payment_success.php?transaction_id=" . $payment_session['transaction_id'] . "&gateway=esewa&admin_scan=1");
-                exit();
-            } else {
-                $error = "Admin payment processing failed.";
-            }
+            error_log("Valid admin credentials - Processing payment...");
+            $is_admin = true;
         } else {
             $error = "Invalid credentials. Use demo: Mobile: 9800000001, MPIN: 1234";
+            error_log("Invalid credentials entered");
         }
-    }
-}
-
-function processEsewaPayment($pdo, $payment_session, $bill, $user_id, $is_admin = false) {
-    try {
-        $pdo->beginTransaction();
         
-        // Update bill status
-        $stmt = $pdo->prepare("UPDATE bills SET status = 'paid', paid_at = NOW() WHERE id = ?");
-        $stmt->execute([$bill['id']]);
-        
-        // Insert payment record
-        $stmt = $pdo->prepare("INSERT INTO payments (user_id, bill_id, payment_amount, payment_method, transaction_id, status, payment_date) 
-                              VALUES (?, ?, ?, 'esewa', ?, 'completed', NOW())");
-        $stmt->execute([
-            $user_id,
-            $bill['id'],
-            $bill['amount'],
-            $payment_session['transaction_id']
-        ]);
-        
-        // Create admin notification
-        $admin_message = "eSewa Payment Received - Amount: ₹" . number_format($bill['amount'], 2) . 
-                        " - From: " . $_SESSION['full_name'] . 
-                        " - Bill: #" . $bill['bill_number'] . 
-                        ($is_admin ? " - Via: Admin QR Scan" : " - Via: Customer Payment");
-        
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
-                              SELECT id, 'eSewa Payment Received', ?, 'payment', NOW() 
-                              FROM users WHERE is_admin = TRUE");
-        $stmt->execute([$admin_message]);
-        
-        // Create user notification
-        $user_message = "Payment Successful - Amount: ₹" . number_format($bill['amount'], 2) . 
-                       " - Bill: #" . $bill['bill_number'] . 
-                       " - Transaction ID: " . $payment_session['transaction_id'];
-        
-        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, created_at) 
-                              VALUES (?, 'Payment Successful', ?, 'payment', NOW())");
-        $stmt->execute([$user_id, $user_message]);
-        
-        $pdo->commit();
-        return true;
-        
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        error_log("eSewa payment error: " . $e->getMessage());
-        return false;
+        if (!$error) {
+            // Process the payment
+            try {
+                error_log("Starting payment transaction...");
+                $pdo->beginTransaction();
+                
+                // Get payment amount from any available field
+                $payment_amount = $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0;
+                $transaction_id = $payment_session['transaction_id'];
+                
+                error_log("Payment Amount: $payment_amount, Transaction ID: $transaction_id");
+                
+                // 1. Update bill status
+                error_log("Updating bill status...");
+                $stmt = $pdo->prepare("UPDATE bills SET 
+                                      payment_status = 'paid', 
+                                      status = 'completed', 
+                                      paid_at = NOW() 
+                                      WHERE id = ?");
+                $stmt->execute([$bill['id']]);
+                error_log("Bill updated. Rows affected: " . $stmt->rowCount());
+                
+                // 2. Insert payment record
+                error_log("Inserting payment record...");
+                $stmt = $pdo->prepare("INSERT INTO payments (
+                                      bill_id, 
+                                      customer_id, 
+                                      amount, 
+                                      payment_method, 
+                                      payment_date,
+                                      transaction_id,
+                                      status,
+                                      created_by
+                                      ) VALUES (?, ?, ?, 'esewa', CURDATE(), ?, 'completed', ?)");
+                
+                $result = $stmt->execute([
+                    $bill['id'],
+                    $user_id,
+                    $payment_amount,
+                    $transaction_id,
+                    $user_id
+                ]);
+                
+                if ($result) {
+                    $payment_id = $pdo->lastInsertId();
+                    error_log("✅ Payment inserted with ID: $payment_id");
+                    
+                    // 3. Create admin notification
+                    error_log("Creating notifications...");
+                    $admin_message = "eSewa Payment Received - Amount: ₹" . number_format($payment_amount, 2) . 
+                                    " - From: " . $_SESSION['full_name'] . 
+                                    " - Bill: #" . $bill['bill_number'] . 
+                                    " - Transaction ID: " . $transaction_id;
+                    
+                    if ($is_admin) {
+                        $admin_message .= " - Via: Admin QR Scan";
+                    }
+                    
+                    // Insert into admin_notifications if table exists
+                    try {
+                        $stmt = $pdo->prepare("INSERT INTO admin_notifications (title, message, type) VALUES (?, ?, 'payment')");
+                        $stmt->execute(['Payment Received via eSewa', $admin_message]);
+                        error_log("Admin notification created");
+                    } catch (Exception $e) {
+                        error_log("Note: Could not create admin notification (table might not exist): " . $e->getMessage());
+                    }
+                    
+                    // 4. Create user notification
+                    $user_message = "Payment Successful - Amount: ₹" . number_format($payment_amount, 2) . 
+                                   " - Bill: #" . $bill['bill_number'] . 
+                                   " - Transaction ID: " . $transaction_id;
+                    
+                    try {
+                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Payment Successful', ?, 'payment')");
+                        $stmt->execute([$user_id, $user_message]);
+                        error_log("User notification created");
+                    } catch (Exception $e) {
+                        error_log("Note: Could not create user notification: " . $e->getMessage());
+                    }
+                    
+                    // Commit transaction
+                    $pdo->commit();
+                    error_log("✅ Transaction committed successfully!");
+                    
+                    // Success - redirect
+                    unset($_SESSION['payment_session']);
+                    $_SESSION['payment_success'] = [
+                        'transaction_id' => $transaction_id,
+                        'amount' => $payment_amount,
+                        'bill_number' => $bill['bill_number'],
+                        'admin_scan' => $is_admin
+                    ];
+                    
+                    error_log("Redirecting to success page...");
+                    
+                    if ($is_admin) {
+                        header("Location: payment_success.php?admin_scan=1");
+                    } else {
+                        header("Location: payment_success.php");
+                    }
+                    exit();
+                    
+                } else {
+                    $pdo->rollBack();
+                    $error = "Payment insertion failed. Please try again.";
+                    error_log("❌ Payment insertion failed");
+                }
+                
+            } catch (Exception $e) {
+                if (isset($pdo) && $pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                $error = "Payment processing error: " . $e->getMessage();
+                error_log("❌ Payment error: " . $e->getMessage());
+                error_log("Error trace: " . $e->getTraceAsString());
+            }
+        }
     }
 }
 
 // Generate QR code data
 $qr_data = PaymentConfig::generateEsewaQRData(
-    $bill['amount'],
+    $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0,
     $payment_session['transaction_id']
 );
 
@@ -214,41 +312,38 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
             margin-bottom: 1rem;
         }
         
-        .admin-scanner-btn {
-            background: #3498db;
-            color: white;
-            border: none;
-            padding: 10px 20px;
+        .alert {
+            padding: 1rem;
             border-radius: 5px;
-            cursor: pointer;
-            margin-top: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin: 10px auto;
+            margin-bottom: 1rem;
         }
         
-        .qr-scanner-preview {
-            display: none;
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 8px;
-            margin-top: 1rem;
-            border: 2px dashed #3498db;
+        .alert-danger {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
         }
         
-        .scan-animation {
-            width: 100%;
-            height: 3px;
-            background: #53c41a;
+        .alert-success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .debug-info {
+            background: #f0f0f0;
+            padding: 10px;
             margin: 10px 0;
-            animation: scan 2s infinite;
+            border-left: 4px solid #3498db;
+            font-family: monospace;
+            font-size: 12px;
         }
         
-        @keyframes scan {
-            0% { transform: translateY(0); }
-            50% { transform: translateY(150px); }
-            100% { transform: translateY(0); }
+        /* Make form submission obvious */
+        form:focus-within {
+            border: 2px solid #3498db;
+            padding: 10px;
+            border-radius: 5px;
         }
     </style>
 </head>
@@ -303,14 +398,7 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                         </div>
                     <?php endif; ?>
                     
-                    <?php if ($success): ?>
-                        <div class="alert alert-success">
-                            <i data-lucide="check-circle" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                            <?php echo $success; ?>
-                        </div>
-                    <?php endif; ?>
-                    
-                    <form method="POST" action="">
+                    <form method="POST" action="" id="esewaForm">
                         <div class="form-group">
                             <label for="mobile">
                                 <i data-lucide="phone" style="width: 1rem; height: 1rem; margin-right: 0.5rem; vertical-align: middle;"></i>
@@ -331,7 +419,7 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                         
                         <button type="submit" name="simulate_payment" class="btn" style="width: 100%; padding: 1rem; background: #53c41a;">
                             <i data-lucide="credit-card" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>
-                            Pay ₹<?php echo number_format($bill['amount'], 2); ?>
+                            Pay ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
                         </button>
                     </form>
                     
@@ -343,6 +431,16 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                         <p><strong>Customer Mobile:</strong> 9800000001, 9800000002, 9800000003</p>
                         <p><strong>MPIN:</strong> 1234</p>
                         <p><strong>Admin Scanner:</strong> mobile: admin, mpin: admin123</p>
+                    </div>
+                    
+                    <!-- Debug info -->
+                    <div class="debug-info">
+                        <strong>Debug Info:</strong><br>
+                        User ID: <?php echo $user_id; ?><br>
+                        Bill ID: <?php echo $bill['id']; ?><br>
+                        Bill Number: <?php echo $bill['bill_number']; ?><br>
+                        Transaction ID: <?php echo $payment_session['transaction_id']; ?><br>
+                        Amount: ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
                     </div>
                 </div>
                 
@@ -360,7 +458,7 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                     
                     <div class="payment-detail-item">
                         <span>Service:</span>
-                        <strong><?php echo ucfirst($bill['bill_type']); ?></strong>
+                        <strong><?php echo isset($bill['bill_type']) ? ucfirst($bill['bill_type']) : 'General'; ?></strong>
                     </div>
                     
                     <div class="payment-detail-item">
@@ -369,14 +467,9 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                     </div>
                     
                     <div class="payment-detail-item">
-                        <span>Customer Code:</span>
-                        <strong><?php echo $bill['customer_code']; ?></strong>
-                    </div>
-                    
-                    <div class="payment-detail-item">
                         <span>Amount:</span>
                         <strong style="color: #e74c3c; font-size: 1.2em;">
-                            ₹<?php echo number_format($bill['amount'], 2); ?>
+                            ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
                         </strong>
                     </div>
                     
@@ -394,7 +487,7 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                         <div class="payment-detail-item" style="font-size: 1.1em;">
                             <strong>Total Payable:</strong>
                             <strong style="color: #27ae60; font-size: 1.3em;">
-                                ₹<?php echo number_format($bill['amount'], 2); ?>
+                                ₹<?php echo number_format($bill['amount'] ?? 0, 2); ?>
                             </strong>
                         </div>
                     </div>
@@ -411,83 +504,6 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
                     <div class="qr-code-container">
                         <img src="<?php echo $qr_url; ?>" alt="eSewa QR Code" style="width: 250px; height: 250px;">
                     </div>
-                    
-                    <div style="margin-top: 1rem;">
-                        <button type="button" onclick="showAdminScanner()" class="admin-scanner-btn">
-                            <i data-lucide="scan" style="width: 1.2rem; height: 1.2rem;"></i>
-                            Generate Admin QR Scanner
-                        </button>
-                    </div>
-                    
-                    <!-- Admin QR Scanner Preview -->
-                    <div id="adminScanner" class="qr-scanner-preview">
-                        <h4>
-                            <i data-lucide="camera" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
-                            Admin QR Code Scanner
-                        </h4>
-                        <div style="position: relative; width: 250px; height: 250px; margin: 0 auto;">
-                            <img src="<?php echo $qr_url; ?>" alt="Admin QR Code" style="width: 250px; height: 250px;">
-                            <div class="scan-animation"></div>
-                        </div>
-                        <p style="margin-top: 1rem;">
-                            <strong>Admin Mobile Number:</strong> <?php echo PaymentConfig::$esewa['qr_merchant_id']; ?>
-                        </p>
-                        <p><small>Scan this QR code with admin eSewa to receive payment</small></p>
-                        
-                        <div style="margin-top: 1rem;">
-                            <button type="button" onclick="simulateAdminScan()" class="btn" style="background: #3498db;">
-                                <i data-lucide="smartphone" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>
-                                Simulate Admin Scan
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Real-time Notification Info -->
-            <div class="card" style="margin-top: 2rem;">
-                <h3>Payment Flow Information</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;">
-                    <div style="text-align: center;">
-                        <i data-lucide="smartphone" style="width: 2rem; height: 2rem; color: #53c41a;"></i>
-                        <h4>Customer Side</h4>
-                        <ul style="text-align: left;">
-                            <li>Bill validation</li>
-                            <li>eSewa authentication</li>
-                            <li>Payment processing</li>
-                            <li>Success confirmation</li>
-                        </ul>
-                    </div>
-                    <div style="text-align: center;">
-                        <i data-lucide="database" style="width: 2rem; height: 2rem; color: #3498db;"></i>
-                        <h4>Database Updates</h4>
-                        <ul style="text-align: left;">
-                            <li>Bill status: pending → paid</li>
-                            <li>Payment record created</li>
-                            <li>Transaction ID stored</li>
-                            <li>Timestamp recorded</li>
-                        </ul>
-                    </div>
-                    <div style="text-align: center;">
-                        <i data-lucide="bell" style="width: 2rem; height: 2rem; color: #f39c12;"></i>
-                        <h4>Notifications</h4>
-                        <ul style="text-align: left;">
-                            <li>Admin gets payment alert</li>
-                            <li>Customer gets confirmation</li>
-                            <li>Real-time updates</li>
-                            <li>Notification badge updates</li>
-                        </ul>
-                    </div>
-                    <div style="text-align: center;">
-                        <i data-lucide="check-circle" style="width: 2rem; height: 2rem; color: #27ae60;"></i>
-                        <h4>Final Status</h4>
-                        <ul style="text-align: left;">
-                            <li>Bill marked as paid</li>
-                            <li>Payment history updated</li>
-                            <li>Customer can't pay again</li>
-                            <li>Admin sees completed status</li>
-                        </ul>
-                    </div>
                 </div>
             </div>
         </div>
@@ -500,37 +516,64 @@ $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" .
     </footer>
 
     <script>
-        function showAdminScanner() {
-            const scanner = document.getElementById('adminScanner');
-            scanner.style.display = 'block';
+        // Form submission handler with debug
+        document.getElementById('esewaForm').addEventListener('submit', function(e) {
+            console.log('Form submission started');
             
-            // Animate scanner
-            const scanLine = scanner.querySelector('.scan-animation');
-            scanLine.style.animation = 'scan 2s infinite';
-        }
-        
-        function simulateAdminScan() {
-            // Auto-fill admin credentials and submit
-            document.getElementById('mobile').value = 'admin';
-            document.getElementById('mpin').value = 'admin123';
-            
-            // Show confirmation
-            if (confirm('Simulate admin QR scan? This will process the payment to admin.')) {
-                // Submit the form
-                document.querySelector('form').submit();
+            const submitBtn = this.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i data-lucide="loader-2" style="width: 1.2rem; height: 1.2rem; margin-right: 8px; animation: spin 1s linear infinite;"></i>Processing Payment...';
+                
+                // Show loading message
+                const loadingMsg = document.createElement('div');
+                loadingMsg.id = 'loadingMessage';
+                loadingMsg.style.cssText = 'background: #3498db; color: white; padding: 10px; margin: 10px 0; border-radius: 5px; text-align: center;';
+                loadingMsg.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing your payment...';
+                this.parentNode.insertBefore(loadingMsg, this.nextSibling);
             }
-        }
+        });
         
-        // Auto-refresh QR code every minute
-        setInterval(() => {
-            const qrImages = document.querySelectorAll('img[src*="chart.googleapis.com"]');
-            qrImages.forEach(img => {
-                img.src = img.src.split('&refresh=')[0] + '&refresh=' + Date.now();
-            });
-        }, 60000);
+        // Add CSS animation for spinner
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+            /* Highlight form on focus */
+            input:focus {
+                border-color: #53c41a !important;
+                box-shadow: 0 0 0 2px rgba(83, 196, 26, 0.2) !important;
+            }
+        `;
+        document.head.appendChild(style);
         
         // Initialize icons
         lucide.createIcons();
+        
+        // Debug log
+        console.log('Payment page loaded successfully');
+        console.log('Form ready for submission');
+        
+        // Add click handler to test button
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('esewaForm');
+            if (form) {
+                console.log('Form found, adding event listeners');
+                
+                // Also add a test button for debugging
+                const testBtn = document.createElement('button');
+                testBtn.type = 'button';
+                testBtn.textContent = 'Test Form Submission';
+                testBtn.style.cssText = 'background: #e74c3c; color: white; padding: 10px; margin: 10px 0; border: none; border-radius: 5px;';
+                testBtn.onclick = function() {
+                    console.log('Test button clicked, submitting form...');
+                    form.submit();
+                };
+                form.appendChild(testBtn);
+            }
+        });
     </script>
 </body>
 </html>

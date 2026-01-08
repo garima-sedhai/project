@@ -8,28 +8,59 @@ if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['
     exit();
 }
 
-$transaction_id = isset($_GET['transaction_id']) ? $_GET['transaction_id'] : null;
-
-// Get payment details
-$payment = null;
-if ($transaction_id) {
-    $stmt = $pdo->prepare("SELECT p.*, b.bill_type, b.bill_number, b.description, u.full_name 
+// Check if we have success data in session
+if (!isset($_SESSION['payment_success'])) {
+    // Try to get from URL
+    $transaction_id = isset($_GET['transaction_id']) ? $_GET['transaction_id'] : null;
+    $admin_scan = isset($_GET['admin_scan']) ? $_GET['admin_scan'] : false;
+    
+    if ($transaction_id) {
+        // Get payment details from database
+        $stmt = $pdo->prepare("SELECT p.*, b.bill_number, b.bill_type, u.full_name 
+                              FROM payments p 
+                              JOIN bills b ON p.bill_id = b.id 
+                              JOIN users u ON p.customer_id = u.id 
+                              WHERE p.transaction_id = ? AND p.customer_id = ?");
+        $stmt->execute([$transaction_id, $_SESSION['user_id']]);
+        $payment = $stmt->fetch();
+        
+        if ($payment && $admin_scan) {
+            $payment['admin_scan'] = true;
+        }
+    } else {
+        header("Location: payment.php");
+        exit();
+    }
+} else {
+    // Use session data
+    $success_data = $_SESSION['payment_success'];
+    
+    // Get basic payment info
+    $stmt = $pdo->prepare("SELECT p.*, b.bill_number, b.bill_type, u.full_name 
                           FROM payments p 
                           JOIN bills b ON p.bill_id = b.id 
-                          JOIN users u ON p.user_id = u.id 
-                          WHERE p.transaction_id = ? AND p.user_id = ?");
-    $stmt->execute([$transaction_id, $_SESSION['user_id']]);
+                          JOIN users u ON p.customer_id = u.id 
+                          WHERE p.transaction_id = ? AND p.customer_id = ?
+                          ORDER BY p.created_at DESC LIMIT 1");
+    $stmt->execute([$success_data['transaction_id'], $_SESSION['user_id']]);
     $payment = $stmt->fetch();
+    
+    if ($payment && isset($success_data['admin_scan'])) {
+        $payment['admin_scan'] = true;
+    }
+    
+    // Clear session
+    unset($_SESSION['payment_success']);
 }
 
 if (!$payment) {
-    // If no payment found, try to get the latest successful payment for this user
-    $stmt = $pdo->prepare("SELECT p.*, b.bill_type, b.bill_number, b.description, u.full_name 
+    // If no payment found, try to get the latest successful payment
+    $stmt = $pdo->prepare("SELECT p.*, b.bill_number, b.bill_type, u.full_name 
                           FROM payments p 
                           JOIN bills b ON p.bill_id = b.id 
-                          JOIN users u ON p.user_id = u.id 
-                          WHERE p.user_id = ? AND p.status = 'completed' 
-                          ORDER BY p.payment_date DESC 
+                          JOIN users u ON p.customer_id = u.id 
+                          WHERE p.customer_id = ? AND p.status = 'completed' 
+                          ORDER BY p.created_at DESC 
                           LIMIT 1");
     $stmt->execute([$_SESSION['user_id']]);
     $payment = $stmt->fetch();
@@ -102,17 +133,6 @@ if (isset($_SESSION['payment_session'])) {
             z-index: 1000;
         }
         
-        @keyframes confetti-fall {
-            0% {
-                transform: translateY(-100px) rotate(0deg);
-                opacity: 1;
-            }
-            100% {
-                transform: translateY(100vh) rotate(360deg);
-                opacity: 0;
-            }
-        }
-        
         .success-badge {
             background: #27ae60;
             color: white;
@@ -127,6 +147,35 @@ if (isset($_SESSION['payment_session'])) {
             width: 4rem;
             height: 4rem;
             margin-bottom: 1rem;
+        }
+        
+        .admin-badge {
+            background: #3498db;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-left: 0.5rem;
+        }
+        
+        @keyframes confetti-fall {
+            0% {
+                transform: translateY(-100px) rotate(0deg);
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(100vh) rotate(360deg);
+                opacity: 0;
+            }
+        }
+        
+        .notification-info {
+            background: #e8f4fd;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            text-align: left;
         }
     </style>
 </head>
@@ -163,8 +212,18 @@ if (isset($_SESSION['payment_session'])) {
         <div class="success-container">
             <i data-lucide="check-circle" class="icon" style="color: #27ae60;"></i>
             <div class="success-badge">Payment Successful!</div>
+            <?php if (isset($payment['admin_scan']) && $payment['admin_scan']): ?>
+                <div class="admin-badge">Admin QR Scan</div>
+            <?php endif; ?>
             <h1>Thank You for Your Payment!</h1>
             <p>Your payment has been processed successfully.</p>
+            
+            <?php if (isset($payment['admin_scan']) && $payment['admin_scan']): ?>
+                <div class="notification-info">
+                    <h4><i data-lucide="scan" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>Admin QR Scan Payment</h4>
+                    <p>This payment was processed via Admin QR Code Scanner. The admin has been notified and payment is confirmed.</p>
+                </div>
+            <?php endif; ?>
             
             <div class="receipt">
                 <h3>Payment Receipt</h3>
@@ -178,11 +237,11 @@ if (isset($_SESSION['payment_session'])) {
                 </div>
                 <div class="receipt-item">
                     <span>Service:</span>
-                    <strong><?php echo ucfirst($payment['bill_type']); ?></strong>
+                    <strong><?php echo isset($payment['bill_type']) ? ucfirst($payment['bill_type']) : 'General'; ?></strong>
                 </div>
                 <div class="receipt-item">
                     <span>Amount Paid:</span>
-                    <strong>₹<?php echo number_format($payment['payment_amount'], 2); ?></strong>
+                    <strong>₹<?php echo number_format($payment['amount'], 2); ?></strong>
                 </div>
                 <div class="receipt-item">
                     <span>Payment Method:</span>
@@ -193,15 +252,31 @@ if (isset($_SESSION['payment_session'])) {
                     <strong style="color: #27ae60;"><?php echo ucfirst($payment['status']); ?></strong>
                 </div>
                 <div class="receipt-item">
-                    <span>Date & Time:</span>
-                    <strong><?php echo date('M d, Y h:i A', strtotime($payment['payment_date'])); ?></strong>
+                    <span>Payment Date:</span>
+                    <strong><?php echo date('M d, Y', strtotime($payment['payment_date'])); ?></strong>
                 </div>
-                <?php if ($payment['description']): ?>
+                <?php if (isset($payment['notes']) && !empty($payment['notes'])): ?>
                     <div class="receipt-item">
-                        <span>Description:</span>
-                        <span><?php echo $payment['description']; ?></span>
+                        <span>Notes:</span>
+                        <span><?php echo $payment['notes']; ?></span>
                     </div>
                 <?php endif; ?>
+                
+                <!-- Notification Status -->
+                <div class="receipt-item" style="border-top: 2px solid #3498db; padding-top: 1rem;">
+                    <span><i data-lucide="bell" style="width: 1rem; height: 1rem; margin-right: 0.5rem;"></i>Notification Status:</span>
+                    <strong style="color: #27ae60;">Sent to Admin</strong>
+                </div>
+            </div>
+            
+            <div class="notification-info">
+                <h4><i data-lucide="info" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>What Happens Next?</h4>
+                <ul>
+                    <li><strong>✓ Admin Notification:</strong> Admin has been notified of your payment</li>
+                    <li><strong>✓ Bill Status Updated:</strong> Bill marked as paid in the system</li>
+                    <li><strong>✓ Payment Recorded:</strong> Payment added to your history</li>
+                    <li><strong>✓ Email Confirmation:</strong> Receipt sent to your email (if configured)</li>
+                </ul>
             </div>
             
             <div class="actions">
@@ -249,15 +324,6 @@ if (isset($_SESSION['payment_session'])) {
             // Initialize Lucide Icons
             lucide.createIcons();
         });
-        
-        // Auto-redirect to dashboard after 10 seconds
-        setTimeout(() => {
-            // Only redirect if user is still on this page
-            if (window.location.pathname.includes('payment_success.php')) {
-                // You can uncomment the line below if you want auto-redirect
-                // window.location.href = 'dashboard.php';
-            }
-        }, 10000);
     </script>
 </body>
 </html>
