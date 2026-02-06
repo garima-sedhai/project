@@ -1,6 +1,8 @@
 <?php
-session_start();
-include '../includes/config.php';
+// For customer files:
+$base_path = dirname(__DIR__);
+require_once $base_path . '/includes/config.php';
+require_once $base_path . '/includes/db_connection.php';
 
 // Redirect if not logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
@@ -9,9 +11,11 @@ if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['
 }
 
 $user_id = $_SESSION['user_id'];
+$message = '';
+$message_type = '';
 
-// Get user details including login count
-$stmt = $pdo->prepare("SELECT *, COALESCE(login_count, 0) as login_count FROM users WHERE id = ?");
+// Get current user data
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch();
 
@@ -21,33 +25,96 @@ if (!$user) {
     exit();
 }
 
-// Get user statistics
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_pending, COALESCE(SUM(amount), 0) as total_amount FROM bills WHERE user_id = ? AND status = 'pending'");
-$stmt->execute([$user_id]);
-$pending_stats = $stmt->fetch();
-
-// Get total paid bills
-$stmt = $pdo->prepare("SELECT COUNT(*) as total_paid, COALESCE(SUM(amount), 0) as paid_amount FROM bills WHERE user_id = ? AND status = 'paid'");
-$stmt->execute([$user_id]);
-$paid_stats = $stmt->fetch();
-
-// Get recent activity (last 5 bills)
-$stmt = $pdo->prepare("SELECT b.*, s.service_name FROM bills b 
-                      LEFT JOIN services s ON b.bill_type = s.service_type 
-                      WHERE b.user_id = ? 
-                      ORDER BY b.created_at DESC 
-                      LIMIT 5");
-$stmt->execute([$user_id]);
-$recent_bills = $stmt->fetchAll();
-
-// Get recent payments (last 5)
-$stmt = $pdo->prepare("SELECT p.*, b.bill_type FROM payments p 
-                      JOIN bills b ON p.bill_id = b.id 
-                      WHERE p.user_id = ? 
-                      ORDER BY p.payment_date DESC 
-                      LIMIT 5");
-$stmt->execute([$user_id]);
-$recent_payments = $stmt->fetchAll();
+// Handle profile update
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $full_name = trim($_POST['full_name']);
+    $phone = trim($_POST['phone']);
+    $address = trim($_POST['address']);
+    
+    // Validate inputs
+    $errors = [];
+    
+    if (empty($full_name)) {
+        $errors[] = "Full name is required.";
+    }
+    
+    if (empty($phone)) {
+        $errors[] = "Phone number is required.";
+    }
+    
+    if (empty($address)) {
+        $errors[] = "Address is required.";
+    }
+    
+    // Check if email is being changed (if provided)
+    if (isset($_POST['email']) && !empty($_POST['email'])) {
+        $new_email = trim($_POST['email']);
+        if ($new_email !== $user['email']) {
+            // Check if new email already exists
+            $check_stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $check_stmt->execute([$new_email, $user_id]);
+            if ($check_stmt->fetch()) {
+                $errors[] = "Email is already registered by another user.";
+            } else {
+                // Email can be updated
+                $email = $new_email;
+            }
+        }
+    }
+    
+    if (empty($errors)) {
+        try {
+            // Update user profile
+            $update_stmt = $pdo->prepare("UPDATE users SET 
+                full_name = ?, 
+                phone = ?, 
+                address = ?,
+                updated_at = NOW()
+                WHERE id = ?");
+            
+            $update_stmt->execute([
+                $full_name,
+                $phone,
+                $address,
+                $user_id
+            ]);
+            
+            // Update email if changed
+            if (isset($email) && $email !== $user['email']) {
+                $email_stmt = $pdo->prepare("UPDATE users SET 
+                    email = ?,
+                    email_verified = 0,  // Require re-verification if email changed
+                    updated_at = NOW()
+                    WHERE id = ?");
+                $email_stmt->execute([$email, $user_id]);
+                
+                // Update session email
+                $_SESSION['email'] = $email;
+                
+                $message = "Profile updated successfully! Please verify your new email address.";
+            } else {
+                $message = "Profile updated successfully!";
+            }
+            
+            $message_type = "success";
+            
+            // Update session full name
+            $_SESSION['full_name'] = $full_name;
+            
+            // Refresh user data
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+            $stmt->execute([$user_id]);
+            $user = $stmt->fetch();
+            
+        } catch (PDOException $e) {
+            $message = "Error updating profile: " . $e->getMessage();
+            $message_type = "error";
+        }
+    } else {
+        $message = implode("<br>", $errors);
+        $message_type = "error";
+    }
+}
 
 // Get initials for header
 $first_name = $_SESSION['full_name'];
@@ -68,31 +135,23 @@ $first_letter = strtoupper(substr($initials, 0, 2));
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
-        .profile-main {
-            padding: 2rem 0;
-        }
-        
-        .profile-content {
-            max-width: 1200px;
-            margin: 0 auto;
+        .profile-container {
+            max-width: 800px;
+            margin: 2rem auto;
             padding: 0 1rem;
         }
         
         .profile-header {
             display: flex;
             align-items: center;
-            gap: 2rem;
+            gap: 1.5rem;
             margin-bottom: 2rem;
-            padding: 2rem;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
         
         .profile-avatar {
-            width: 120px;
-            height: 120px;
-            background: linear-gradient(135deg, #075B5E 0%, #0a7a7e 100%);
+            width: 100px;
+            height: 100px;
+            background: #075B5E;
             color: white;
             border-radius: 50%;
             display: flex;
@@ -100,662 +159,635 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             justify-content: center;
             font-size: 2.5rem;
             font-weight: bold;
-            flex-shrink: 0;
             border: 4px solid white;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
         }
         
         .profile-info h1 {
-            margin: 0 0 0.5rem 0;
+            margin: 0 0 0.5rem;
             color: #075B5E;
-            font-size: 1.8rem;
         }
         
         .profile-info p {
-            margin: 0.25rem 0;
+            margin: 0;
             color: #666;
-            font-size: 0.95rem;
         }
         
-        .profile-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            background: #d4edda;
-            color: #155724;
-            border-radius: 20px;
-            font-size: 0.9rem;
-            margin-top: 0.5rem;
+        .profile-tabs {
+            display: flex;
+            border-bottom: 2px solid #e9ecef;
+            margin-bottom: 2rem;
         }
         
-        .profile-grid {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 2rem;
+        .profile-tab {
+            padding: 1rem 2rem;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            font-weight: 500;
+            color: #6c757d;
+            transition: all 0.3s;
         }
         
-        .profile-section {
+        .profile-tab:hover {
+            color: #075B5E;
+        }
+        
+        .profile-tab.active {
+            color: #075B5E;
+            border-bottom-color: #075B5E;
+        }
+        
+        .profile-content {
+            display: none;
+            animation: fadeIn 0.5s;
+        }
+        
+        .profile-content.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .profile-card {
             background: white;
-            border-radius: 8px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 10px;
+            padding: 2rem;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.08);
             margin-bottom: 1.5rem;
         }
         
-        .profile-section h2 {
+        .profile-card h3 {
             color: #075B5E;
-            margin: 0 0 1rem 0;
-            font-size: 1.3rem;
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #f0f0f0;
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
         
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1.5rem;
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .form-control {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: #075B5E;
+            box-shadow: 0 0 0 3px rgba(7, 91, 94, 0.1);
+        }
+        
+        .form-control:disabled {
+            background: #f8f9fa;
+            cursor: not-allowed;
+        }
+        
+        .btn {
+            background: #075B5E;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 5px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .btn:hover {
+            background: #054749;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .btn-block {
+            width: 100%;
+            justify-content: center;
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
         
         .info-item {
-            padding: 1rem;
-            background: #f8f9fa;
-            border-radius: 6px;
-            border-left: 4px solid #075B5E;
+            display: flex;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #f0f0f0;
         }
         
         .info-label {
+            min-width: 150px;
             font-weight: 500;
-            color: #666;
-            font-size: 0.9rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
+            color: #555;
         }
         
         .info-value {
-            color: #333;
-            font-size: 1rem;
-            font-weight: 500;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        
-        .stat-card {
-            text-align: center;
-            padding: 1.2rem;
-            background: #f8f9fa;
-            border-radius: 8px;
-            border: 1px solid #e9ecef;
-            transition: transform 0.3s;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .stat-value {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: #075B5E;
-            display: block;
-            line-height: 1.2;
-        }
-        
-        .stat-label {
-            font-size: 0.85rem;
-            color: #666;
-            display: block;
-            margin-top: 0.5rem;
-        }
-        
-        .activity-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        
-        .activity-item {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            padding: 1rem;
-            border-bottom: 1px solid #eee;
-            transition: background 0.3s;
-        }
-        
-        .activity-item:hover {
-            background: #f8f9fa;
-        }
-        
-        .activity-item:last-child {
-            border-bottom: none;
-        }
-        
-        .activity-icon {
-            width: 40px;
-            height: 40px;
-            background: #075B5E;
-            color: white;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-        
-        .activity-content {
             flex: 1;
-        }
-        
-        .activity-title {
-            font-weight: 500;
-            margin: 0 0 0.25rem 0;
             color: #333;
         }
         
-        .activity-desc {
-            color: #666;
-            font-size: 0.85rem;
-            margin: 0 0 0.25rem 0;
-        }
-        
-        .activity-time {
-            color: #999;
-            font-size: 0.8rem;
-        }
-        
-        .profile-actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1rem;
-            margin-top: 2rem;
-        }
-        
-        .action-btn {
+        .verification-status {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.9rem 1.8rem;
-            border-radius: 6px;
-            text-decoration: none;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: all 0.3s;
-            font-size: 0.95rem;
         }
         
-        .action-btn-primary {
-            background: #075B5E;
-            color: white;
+        .verified {
+            background: #d4edda;
+            color: #155724;
         }
         
-        .action-btn-primary:hover {
-            background: #054749;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(7, 91, 94, 0.2);
+        .not-verified {
+            background: #fff3cd;
+            color: #856404;
         }
         
-        .action-btn-secondary {
-            background: #6c757d;
-            color: white;
+        .account-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1.5rem;
         }
         
-        .action-btn-secondary:hover {
-            background: #5a6268;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(108, 117, 125, 0.2);
-        }
-        
-        .action-btn-danger {
+        .stat-box {
             background: #f8f9fa;
-            color: #e74c3c;
-            border: 1px solid #e74c3c;
-        }
-        
-        .action-btn-danger:hover {
-            background: #e74c3c;
-            color: white;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(231, 76, 60, 0.2);
-        }
-        
-        .empty-state {
+            padding: 1.5rem;
+            border-radius: 8px;
             text-align: center;
-            padding: 2rem;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #075B5E;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-label {
             color: #666;
+            font-size: 0.9rem;
         }
         
-        .empty-state i {
-            width: 48px;
-            height: 48px;
-            color: #ddd;
-            margin-bottom: 1rem;
+        .email-warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            padding: 1rem;
+            margin-top: 1rem;
+            color: #856404;
+            font-size: 0.9rem;
         }
         
-        /* Mobile responsiveness */
         @media (max-width: 768px) {
-            .profile-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .info-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
             .profile-header {
                 flex-direction: column;
                 text-align: center;
-                gap: 1rem;
-                padding: 1.5rem;
             }
             
-            .profile-avatar {
-                width: 100px;
-                height: 100px;
-                font-size: 2rem;
+            .profile-tabs {
+                flex-direction: column;
             }
             
-            .profile-info h1 {
-                font-size: 1.5rem;
+            .profile-tab {
+                text-align: center;
             }
             
-            .profile-actions {
-                justify-content: center;
+            .info-item {
+                flex-direction: column;
+                gap: 0.25rem;
             }
             
-            .action-btn {
-                padding: 0.75rem 1.5rem;
-                width: 100%;
-                justify-content: center;
+            .info-label {
+                min-width: auto;
             }
         }
     </style>
 </head>
 <body>
-    <!-- Profile Sidebar -->
-    <div class="sidebar-overlay" id="sidebarOverlay"></div>
-    <div class="profile-sidebar active" id="profileSidebar" style="right: 0;">
-        <div class="sidebar-header">
-            <div class="sidebar-avatar">
-                <?php echo $first_letter; ?>
-            </div>
-            <div class="sidebar-user-info">
-                <h3><?php echo htmlspecialchars($_SESSION['full_name']); ?></h3>
-                <p>ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
-            </div>
-            <button class="sidebar-close" onclick="window.location.href='dashboard.php'">
-                <i data-lucide="x"></i>
-            </button>
-        </div>
-        
-        <!-- Quick Stats -->
-        <div class="sidebar-stats">
-            <div class="stat-item">
-                <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
-                <span class="stat-label">Pending Bills</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value">₹<?php echo number_format($pending_stats['total_amount'] ?? 0, 0); ?></span>
-                <span class="stat-label">Total Due</span>
-            </div>
-        </div>
-        
-        <div class="sidebar-menu">
-            <a href="profile.php" class="sidebar-item active">
-                <i data-lucide="user" class="sidebar-icon"></i>
-                My Profile
-            </a>
-            <a href="edit_profile.php" class="sidebar-item">
-                <i data-lucide="edit" class="sidebar-icon"></i>
-                Edit Profile
-            </a>
-            <a href="change_password.php" class="sidebar-item">
-                <i data-lucide="key" class="sidebar-icon"></i>
-                Change Password
-            </a>
-            
-            <div class="sidebar-divider"></div>
-            
-            <a href="bills.php" class="sidebar-item">
-                <i data-lucide="file-text" class="sidebar-icon"></i>
-                My Bills
-            </a>
-            <a href="payment.php" class="sidebar-item">
-                <i data-lucide="credit-card" class="sidebar-icon"></i>
-                Make Payment
-            </a>
-            <a href="payment_history.php" class="sidebar-item">
-                <i data-lucide="history" class="sidebar-icon"></i>
-                Payment History
-            </a>
-            
-            <div class="sidebar-divider"></div>
-            
-            <a href="notifications.php" class="sidebar-item">
-                <i data-lucide="bell" class="sidebar-icon"></i>
-                Notifications
-                <span class="notification-badge">3</span>
-            </a>
-            <a href="settings.php" class="sidebar-item">
-                <i data-lucide="settings" class="sidebar-icon"></i>
-                Settings
-            </a>
-            <a href="help.php" class="sidebar-item">
-                <i data-lucide="help-circle" class="sidebar-icon"></i>
-                Help & Support
-            </a>
-        </div>
-        
-        <div class="sidebar-footer">
-            <div style="display: flex; align-items: center; gap: 0.8rem; margin-bottom: 1rem;">
-                <i data-lucide="shield" style="width: 1rem; height: 1rem; color: #27ae60;"></i>
-                <span style="font-size: 0.85rem; color: #666;">Account secured</span>
-            </div>
-            <a href="logout.php" class="btn" style="background: #e74c3c; color: white; width: 100%; text-align: center; padding: 0.7rem;">
-                <i data-lucide="log-out" style="width: 0.9rem; height: 0.9rem; margin-right: 0.4rem;"></i>
-                Logout
-            </a>
-        </div>
-    </div>
-
-    <!-- Main Content -->
-    <div class="main-content" style="margin-right: 350px;">
-        <!-- Header -->
-        <header class="header">
-            <div class="container">
-                <nav class="navbar">
-                    <div class="logo">BillPay Pro</div>
-                    <ul class="nav-links">
-                        <li><a href="dashboard.php">Dashboard</a></li>
-                        <li><a href="bills.php">My Bills</a></li>
-                        <li><a href="payment_history.php">Payment History</a></li>
-                        <li style="display: flex; align-items: center;">
-                            <div class="profile-menu-trigger" onclick="toggleProfileSidebar()">
-                                <div class="first-letter-circle">
-                                    <?php echo $first_letter; ?>
-                                </div>
-                                <div class="user-name-display">
-                                    <span><?php echo $_SESSION['full_name']; ?></span>
-                                    <i data-lucide="chevron-down" style="width: 1rem; height: 1rem;"></i>
-                                </div>
-                            </div>
-                            <a href="logout.php" style="margin-left: 15px;">Logout</a>
-                        </li>
-                    </ul>
-                </nav>
-            </div>
-        </header>
-
+    <!-- Header -->
+    <header class="header">
         <div class="container">
-            <div class="profile-main">
-                <!-- Back to Dashboard - UPDATED -->
-                <div style="margin-bottom: 1.5rem;">
-                    <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
-                        <i data-lucide="arrow-left"></i>
-                        Back to Dashboard
-                    </a>
-                </div>
-                
-                <!-- Profile Header -->
-                <div class="profile-header">
-                    <div class="profile-avatar">
-                        <?php echo $first_letter; ?>
-                    </div>
-                    <div class="profile-info">
-                        <h1><?php echo htmlspecialchars($user['full_name']); ?></h1>
-                        <p><i data-lucide="mail" style="width: 16px; height: 16px;"></i> <?php echo htmlspecialchars($user['email']); ?></p>
-                        <?php if (!empty($user['phone'])): ?>
-                            <p><i data-lucide="phone" style="width: 16px; height: 16px;"></i> <?php echo htmlspecialchars($user['phone']); ?></p>
-                        <?php endif; ?>
-                        <p><i data-lucide="id-card" style="width: 16px; height: 16px;"></i> Customer ID: <?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></p>
-                        <div class="profile-status">
-                            <i data-lucide="check-circle" style="width: 16px; height: 16px;"></i>
-                            Account Active
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="profile-grid">
-                    <!-- Left Column: Personal Information & Stats -->
-                    <div>
-                        <!-- Personal Information -->
-                        <div class="profile-section">
-                            <h2><i data-lucide="user"></i> Personal Information</h2>
-                            <div class="info-grid">
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="user"></i> Full Name
-                                    </div>
-                                    <div class="info-value"><?php echo htmlspecialchars($user['full_name']); ?></div>
-                                </div>
-                                
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="mail"></i> Email Address
-                                    </div>
-                                    <div class="info-value"><?php echo htmlspecialchars($user['email']); ?></div>
-                                </div>
-                                
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="phone"></i> Phone Number
-                                    </div>
-                                    <div class="info-value">
-                                        <?php echo !empty($user['phone']) ? htmlspecialchars($user['phone']) : '<span style="color: #999;">Not provided</span>'; ?>
-                                    </div>
-                                </div>
-                                
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="id-card"></i> Customer Code
-                                    </div>
-                                    <div class="info-value"><?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></div>
-                                </div>
-                                
-                                <div class="info-item" style="grid-column: span 2;">
-                                    <div class="info-label">
-                                        <i data-lucide="map-pin"></i> Address
-                                    </div>
-                                    <div class="info-value">
-                                        <?php echo !empty($user['address']) ? nl2br(htmlspecialchars($user['address'])) : '<span style="color: #999;">Not provided</span>'; ?>
-                                    </div>
-                                </div>
-                                
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="calendar"></i> Member Since
-                                    </div>
-                                    <div class="info-value"><?php echo date('F d, Y', strtotime($user['created_at'])); ?></div>
-                                </div>
-                                
-                                <div class="info-item">
-                                    <div class="info-label">
-                                        <i data-lucide="clock"></i> Last Login
-                                    </div>
-                                    <div class="info-value">
-                                        <?php echo !empty($user['last_login']) ? date('F d, Y - h:i A', strtotime($user['last_login'])) : 'Never'; ?>
-                                    </div>
-                                </div>
+            <nav class="navbar">
+                <div class="logo">BillPay Pro</div>
+                <ul class="nav-links">
+                    <li><a href="dashboard.php">Dashboard</a></li>
+                    <li><a href="bills.php">My Bills</a></li>
+                    <li><a href="payment_history.php">Payment History</a></li>
+                    <li style="display: flex; align-items: center;">
+                        <div class="profile-menu-trigger" onclick="window.location.href='profile.php'">
+                            <div class="first-letter-circle">
+                                <?php echo $first_letter; ?>
+                            </div>
+                            <div class="user-name-display">
+                                <span><?php echo $_SESSION['full_name']; ?></span>
                             </div>
                         </div>
+                        <a href="logout.php" style="margin-left: 15px;">Logout</a>
+                    </li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="profile-container">
+            <!-- Back Navigation -->
+            <div style="margin-bottom: 1.5rem;">
+                <a href="dashboard.php" style="color: #075B5E; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+                    <i data-lucide="arrow-left"></i>
+                    Back to Dashboard
+                </a>
+            </div>
+            
+            <!-- Profile Header -->
+            <div class="profile-header">
+                <div class="profile-avatar">
+                    <?php echo $first_letter; ?>
+                </div>
+                <div class="profile-info">
+                    <h1><?php echo htmlspecialchars($user['full_name']); ?></h1>
+                    <p><?php echo htmlspecialchars($user['email']); ?></p>
+                    <p style="margin-top: 0.5rem;">
+                        <span class="verification-status <?php echo $user['email_verified'] ? 'verified' : 'not-verified'; ?>">
+                            <i data-lucide="<?php echo $user['email_verified'] ? 'check-circle' : 'alert-circle'; ?>" style="width: 16px; height: 16px;"></i>
+                            <?php echo $user['email_verified'] ? 'Email Verified' : 'Email Not Verified'; ?>
+                        </span>
                         
-                        <!-- Account Statistics -->
-                        <div class="profile-section">
-                            <h2><i data-lucide="bar-chart"></i> Account Statistics</h2>
-                            <div class="stats-grid">
-                                <div class="stat-card">
-                                    <span class="stat-value"><?php echo $user['login_count']; ?></span>
-                                    <span class="stat-label">Total Logins</span>
-                                </div>
-                                <div class="stat-card">
-                                    <span class="stat-value"><?php echo $pending_stats['total_pending']; ?></span>
-                                    <span class="stat-label">Pending Bills</span>
-                                </div>
-                                <div class="stat-card">
-                                    <span class="stat-value"><?php echo $paid_stats['total_paid']; ?></span>
-                                    <span class="stat-label">Paid Bills</span>
-                                </div>
-                                <div class="stat-card">
-                                    <span class="stat-value">₹<?php echo number_format($paid_stats['paid_amount'] ?? 0, 0); ?></span>
-                                    <span class="stat-label">Total Paid</span>
-                                </div>
+                        <span class="verification-status <?php echo $user['admin_approved'] ? 'verified' : 'not-verified'; ?>" style="margin-left: 0.5rem;">
+                            <i data-lucide="<?php echo $user['admin_approved'] ? 'check-circle' : 'alert-circle'; ?>" style="width: 16px; height: 16px;"></i>
+                            <?php echo $user['admin_approved'] ? 'Account Approved' : 'Pending Approval'; ?>
+                        </span>
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Messages -->
+            <?php if ($message): ?>
+                <div class="alert alert-<?php echo $message_type; ?>">
+                    <i data-lucide="<?php echo $message_type == 'success' ? 'check-circle' : 'alert-circle'; ?>" style="width: 1.2rem; height: 1.2rem;"></i>
+                    <?php echo $message; ?>
+                </div>
+            <?php endif; ?>
+            
+            <!-- Profile Tabs -->
+            <div class="profile-tabs">
+                <div class="profile-tab active" onclick="showProfileTab('info')">
+                    <i data-lucide="user" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    Personal Info
+                </div>
+                <div class="profile-tab" onclick="showProfileTab('account')">
+                    <i data-lucide="shield" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    Account Info
+                </div>
+                <div class="profile-tab" onclick="showProfileTab('security')">
+                    <i data-lucide="lock" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem; vertical-align: middle;"></i>
+                    Security
+                </div>
+            </div>
+            
+            <!-- Personal Info Tab -->
+            <div id="info-tab" class="profile-content active">
+                <form method="POST" action="" class="profile-card">
+                    <h3><i data-lucide="user-edit"></i> Edit Personal Information</h3>
+                    
+                    <div class="form-group">
+                        <label for="full_name">Full Name *</label>
+                        <input type="text" id="full_name" name="full_name" class="form-control" 
+                               value="<?php echo htmlspecialchars($user['full_name']); ?>" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="email">Email Address *</label>
+                        <input type="email" id="email" name="email" class="form-control" 
+                               value="<?php echo htmlspecialchars($user['email']); ?>" required
+                               <?php echo $user['email_verified'] ? '' : 'disabled'; ?>>
+                        <?php if (!$user['email_verified']): ?>
+                            <div class="email-warning">
+                                <i data-lucide="alert-triangle" style="width: 16px; height: 16px; margin-right: 0.5rem; vertical-align: middle;"></i>
+                                Email not verified. Please verify your email before changing it.
                             </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="phone">Phone Number *</label>
+                        <input type="tel" id="phone" name="phone" class="form-control" 
+                               value="<?php echo htmlspecialchars($user['phone'] ?? ''); ?>" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="address">Address *</label>
+                        <textarea id="address" name="address" class="form-control" rows="3" required><?php echo htmlspecialchars($user['address'] ?? ''); ?></textarea>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-block">
+                        <i data-lucide="save"></i> Save Changes
+                    </button>
+                </form>
+            </div>
+            
+            <!-- Account Info Tab -->
+            <div id="account-tab" class="profile-content">
+                <div class="profile-card">
+                    <h3><i data-lucide="user-check"></i> Account Information</h3>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Account Status</div>
+                        <div class="info-value">
+                            <?php if ($user['admin_approved']): ?>
+                                <span class="verification-status verified">
+                                    <i data-lucide="check-circle" style="width: 16px; height: 16px;"></i>
+                                    Active
+                                </span>
+                            <?php else: ?>
+                                <span class="verification-status not-verified">
+                                    <i data-lucide="alert-circle" style="width: 16px; height: 16px;"></i>
+                                    Pending Admin Approval
+                                </span>
+                            <?php endif; ?>
                         </div>
                     </div>
                     
-                    <!-- Right Column: Recent Activity -->
-                    <div>
-                        <!-- Recent Bills -->
-                        <div class="profile-section">
-                            <h2><i data-lucide="file-text"></i> Recent Bills</h2>
-                            <?php if (count($recent_bills) > 0): ?>
-                                <ul class="activity-list">
-                                    <?php foreach ($recent_bills as $bill): ?>
-                                        <li class="activity-item">
-                                            <div class="activity-icon">
-                                                <i data-lucide="file-text"></i>
-                                            </div>
-                                            <div class="activity-content">
-                                                <div class="activity-title">
-                                                    <?php echo $bill['service_name'] ?? ucfirst($bill['bill_type']); ?>
-                                                </div>
-                                                <div class="activity-desc">
-                                                    ₹<?php echo number_format($bill['amount'], 2); ?>
-                                                    • Due: <?php echo date('M d, Y', strtotime($bill['due_date'])); ?>
-                                                </div>
-                                                <div class="activity-time">
-                                                    <?php if ($bill['status'] == 'pending'): ?>
-                                                        <span style="color: #e74c3c;">Pending</span>
-                                                    <?php else: ?>
-                                                        <span style="color: #27ae60;">Paid</span>
-                                                    <?php endif; ?>
-                                                    • Created: <?php echo date('M d, Y', strtotime($bill['created_at'])); ?>
-                                                </div>
-                                            </div>
-                                        </li>
-                                    <?php endforeach; ?>
-                                </ul>
+                    <div class="info-item">
+                        <div class="info-label">Email Status</div>
+                        <div class="info-value">
+                            <?php if ($user['email_verified']): ?>
+                                <span class="verification-status verified">
+                                    <i data-lucide="check-circle" style="width: 16px; height: 16px;"></i>
+                                    Verified
+                                </span>
                             <?php else: ?>
-                                <div class="empty-state">
-                                    <i data-lucide="file-text"></i>
-                                    <p>No bills found</p>
-                                </div>
+                                <span class="verification-status not-verified">
+                                    <i data-lucide="alert-circle" style="width: 16px; height: 16px;"></i>
+                                    Not Verified
+                                </span>
+                                <a href="verify_email.php" style="margin-left: 1rem; color: #075B5E; text-decoration: none;">
+                                    <i data-lucide="mail" style="width: 16px; height: 16px; vertical-align: middle;"></i>
+                                    Verify Now
+                                </a>
                             <?php endif; ?>
                         </div>
-                        
-                        <!-- Recent Payments -->
-                        <div class="profile-section">
-                            <h2><i data-lucide="credit-card"></i> Recent Payments</h2>
-                            <?php if (count($recent_payments) > 0): ?>
-                                <ul class="activity-list">
-                                    <?php foreach ($recent_payments as $payment): ?>
-                                        <li class="activity-item">
-                                            <div class="activity-icon">
-                                                <i data-lucide="credit-card"></i>
-                                            </div>
-                                            <div class="activity-content">
-                                                <div class="activity-title">
-                                                    <?php echo ucfirst($payment['bill_type']); ?> Payment
-                                                </div>
-                                                <div class="activity-desc">
-                                                    ₹<?php echo number_format($payment['payment_amount'], 2); ?>
-                                                    • <?php echo ucfirst($payment['payment_method'] ?? 'N/A'); ?>
-                                                </div>
-                                                <div class="activity-time">
-                                                    <?php echo date('M d, Y - h:i A', strtotime($payment['payment_date'])); ?>
-                                                </div>
-                                            </div>
-                                        </li>
-                                    <?php endforeach; ?>
-                                </ul>
+                    </div>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Customer Code</div>
+                        <div class="info-value"><?php echo htmlspecialchars($user['customer_code'] ?? 'N/A'); ?></div>
+                    </div>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Member Since</div>
+                        <div class="info-value"><?php echo date('F d, Y', strtotime($user['created_at'])); ?></div>
+                    </div>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Last Login</div>
+                        <div class="info-value">
+                            <?php if (!empty($user['last_login'])): ?>
+                                <?php echo date('F d, Y h:i A', strtotime($user['last_login'])); ?>
                             <?php else: ?>
-                                <div class="empty-state">
-                                    <i data-lucide="credit-card"></i>
-                                    <p>No payments yet</p>
-                                </div>
+                                Never logged in
                             <?php endif; ?>
+                        </div>
+                    </div>
+                    
+                    <div class="account-stats">
+                        <div class="stat-box">
+                            <div class="stat-value">
+                                <?php
+                                // Get total bills count
+                                try {
+                                    $bills_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM bills WHERE customer_id = ?");
+                                    $bills_stmt->execute([$user_id]);
+                                    $bills_count = $bills_stmt->fetch()['count'];
+                                    echo $bills_count;
+                                } catch (Exception $e) {
+                                    echo "0";
+                                }
+                                ?>
+                            </div>
+                            <div class="stat-label">Total Bills</div>
+                        </div>
+                        
+                        <div class="stat-box">
+                            <div class="stat-value">
+                                <?php
+                                // Get pending bills count
+                                try {
+                                    $pending_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM bills WHERE customer_id = ? AND status IN ('pending', 'due', 'overdue')");
+                                    $pending_stmt->execute([$user_id]);
+                                    $pending_count = $pending_stmt->fetch()['count'];
+                                    echo $pending_count;
+                                } catch (Exception $e) {
+                                    echo "0";
+                                }
+                                ?>
+                            </div>
+                            <div class="stat-label">Pending Bills</div>
+                        </div>
+                        
+                        <div class="stat-box">
+                            <div class="stat-value">
+                                <?php
+                                // Get total payments count
+                                try {
+                                    $payments_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM payments WHERE user_id = ?");
+                                    $payments_stmt->execute([$user_id]);
+                                    $payments_count = $payments_stmt->fetch()['count'];
+                                    echo $payments_count;
+                                } catch (Exception $e) {
+                                    echo "0";
+                                }
+                                ?>
+                            </div>
+                            <div class="stat-label">Total Payments</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Security Tab -->
+            <div id="security-tab" class="profile-content">
+                <div class="profile-card">
+                    <h3><i data-lucide="shield"></i> Account Security</h3>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Password</div>
+                        <div class="info-value">
+                            <p>Last changed: 
+                                <?php if (!empty($user['updated_at'])): ?>
+                                    <?php echo date('F d, Y', strtotime($user['updated_at'])); ?>
+                                <?php else: ?>
+                                    Never changed
+                                <?php endif; ?>
+                            </p>
+                            <a href="change_password.php" class="btn" style="margin-top: 0.5rem;">
+                                <i data-lucide="key"></i> Change Password
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Two-Factor Authentication</div>
+                        <div class="info-value">
+                            <p>Not enabled</p>
+                            <button class="btn btn-secondary" style="margin-top: 0.5rem;" disabled>
+                                <i data-lucide="smartphone"></i> Enable 2FA
+                            </button>
+                            <p style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">
+                                <i data-lucide="info" style="width: 16px; height: 16px; vertical-align: middle;"></i>
+                                Two-factor authentication adds an extra layer of security to your account.
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div class="info-item" style="border-bottom: none;">
+                        <div class="info-label">Sessions</div>
+                        <div class="info-value">
+                            <p>Current session started: <?php echo date('F d, Y h:i A', $_SESSION['last_activity'] ?? time()); ?></p>
+                            <a href="logout.php" class="btn btn-secondary" style="margin-top: 0.5rem;">
+                                <i data-lucide="log-out"></i> Logout All Devices
+                            </a>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Action Buttons -->
-                <div class="profile-actions">
-                    <a href="edit_profile.php" class="action-btn action-btn-primary">
-                        <i data-lucide="edit"></i> Edit Profile
-                    </a>
-                    <a href="change_password.php" class="action-btn action-btn-secondary">
-                        <i data-lucide="key"></i> Change Password
-                    </a>
-                    <a href="delete_account.php" class="action-btn action-btn-danger">
-                        <i data-lucide="trash-2"></i> Delete Account
-                    </a>
+                <div class="profile-card" style="border: 2px solid #f8d7da;">
+                    <h3 style="color: #721c24;"><i data-lucide="alert-triangle"></i> Danger Zone</h3>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Delete Account</div>
+                        <div class="info-value">
+                            <p>Permanently delete your account and all associated data.</p>
+                            <p style="font-size: 0.85rem; color: #666; margin-bottom: 1rem;">
+                                <i data-lucide="alert-circle" style="width: 16px; height: 16px; vertical-align: middle;"></i>
+                                This action cannot be undone. All your data will be permanently removed.
+                            </p>
+                            <a href="delete_account.php" class="btn" style="background: #e74c3c;">
+                                <i data-lucide="trash-2"></i> Delete My Account
+                            </a>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-
-        <footer class="footer">
-            <div class="container">
-                <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
-            </div>
-        </footer>
     </div>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; <?php echo date('Y'); ?> BillPay Pro - Online Billing System</p>
+        </div>
+    </footer>
 
     <script>
         lucide.createIcons();
         
-        // Profile Sidebar Functions
-        function toggleProfileSidebar() {
-            const sidebar = document.getElementById('profileSidebar');
-            const overlay = document.getElementById('sidebarOverlay');
+        function showProfileTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.profile-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
             
-            sidebar.classList.toggle('active');
-            overlay.classList.toggle('active');
+            // Remove active class from all tab buttons
+            document.querySelectorAll('.profile-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
             
-            // Adjust main content margin
-            const mainContent = document.querySelector('.main-content');
-            if (sidebar.classList.contains('active')) {
-                mainContent.style.marginRight = '350px';
-                document.body.style.overflow = 'hidden';
-            } else {
-                mainContent.style.marginRight = '0';
-                document.body.style.overflow = 'auto';
-            }
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            
+            // Add active class to clicked tab button
+            event.target.classList.add('active');
         }
         
-        function closeProfileSidebar() {
-            const sidebar = document.getElementById('profileSidebar');
-            const overlay = document.getElementById('sidebarOverlay');
-            
-            sidebar.classList.remove('active');
-            overlay.classList.remove('active');
-            document.querySelector('.main-content').style.marginRight = '0';
-            document.body.style.overflow = 'auto';
-        }
-        
-        // Close sidebar when clicking overlay
-        document.getElementById('sidebarOverlay').addEventListener('click', closeProfileSidebar);
-        
-        // Close sidebar with Escape key
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                closeProfileSidebar();
-            }
+        // Phone number validation
+        document.getElementById('phone').addEventListener('input', function(e) {
+            this.value = this.value.replace(/[^0-9+-\s]/g, '');
         });
         
-        // Make header higher z-index to stay on top
-        document.querySelector('.header').style.zIndex = '1001';
+        // Form validation
+        document.querySelector('form').addEventListener('submit', function(e) {
+            const phone = document.getElementById('phone').value;
+            const address = document.getElementById('address').value;
+            
+            if (phone.length < 10) {
+                e.preventDefault();
+                alert('Please enter a valid phone number (at least 10 digits).');
+                document.getElementById('phone').focus();
+                return false;
+            }
+            
+            if (address.trim().length < 10) {
+                e.preventDefault();
+                alert('Please enter a complete address (at least 10 characters).');
+                document.getElementById('address').focus();
+                return false;
+            }
+            
+            return true;
+        });
+        
+        // Auto-save feature (optional)
+        let saveTimeout;
+        document.querySelectorAll('.form-control').forEach(input => {
+            input.addEventListener('input', function() {
+                clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(() => {
+                    // You could implement auto-save here if needed
+                }, 2000);
+            });
+        });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

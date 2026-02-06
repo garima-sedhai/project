@@ -1475,5 +1475,6 @@ $current_datetime = date('M d, Y h:i A');
             setInterval(updateCurrentTime, 60000);
         });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

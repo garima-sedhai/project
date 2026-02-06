@@ -2,10 +2,7 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
 require_once $base_path . '/includes/db_connection.php';
-// ... rest of code
-?>
 
 // Redirect if not logged in as customer
 if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['is_admin'])) {
@@ -18,12 +15,12 @@ $message = '';
 $message_type = '';
 
 // Get current user data
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ? AND status = 'active'");
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
 $stmt->execute([$user_id]);
 $user = $stmt->fetch();
 
 if (!$user) {
-    $_SESSION['error'] = "User not found or account already deleted.";
+    $_SESSION['error'] = "User not found.";
     header("Location: dashboard.php");
     exit();
 }
@@ -48,65 +45,78 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
     
     // Check for pending bills
-    $stmt = $pdo->prepare("SELECT COUNT(*) as pending_count FROM bills WHERE user_id = ? AND status = 'pending'");
-$stmt->execute([$user_id]);
-$pending_bills = $stmt->fetch();
-    
-    if ($pending_bills['pending_count'] > 0) {
-        $errors[] = "You cannot delete your account while you have pending bills. Please pay or cancel them first.";
+    try {
+        $stmt = $pdo->prepare("SELECT COUNT(*) as pending_count FROM bills WHERE customer_id = ? AND status IN ('pending', 'due', 'overdue')");
+        $stmt->execute([$user_id]);
+        $pending_bills = $stmt->fetch();
+        
+        if ($pending_bills['pending_count'] > 0) {
+            $errors[] = "You cannot delete your account while you have pending bills. Please pay or cancel them first.";
+        }
+    } catch (Exception $e) {
+        // If bills table doesn't exist or query fails, continue
+        error_log("Pending bills check failed: " . $e->getMessage());
     }
     
     if (empty($errors)) {
         try {
-            // Begin transaction
-            $pdo->beginTransaction();
+            // Check if is_active column exists
+            $check_stmt = $pdo->prepare("SHOW COLUMNS FROM users LIKE 'is_active'");
+            $check_stmt->execute();
+            $has_is_active = $check_stmt->rowCount() > 0;
             
-            // OPTION 1: SOFT DELETE (Mark as deleted but keep data)
-            $delete_stmt = $pdo->prepare("UPDATE users SET 
-                status = 'deleted', 
-                email = CONCAT('deleted_', UNIX_TIMESTAMP(), '_', email),
-                phone = CONCAT('deleted_', UNIX_TIMESTAMP(), '_', phone),
-                deleted_at = NOW(),
-                deletion_reason = ?
-                WHERE id = ?");
-            $delete_stmt->execute([$reason, $user_id]);
+            // Check if deleted_at column exists
+            $check_del_stmt = $pdo->prepare("SHOW COLUMNS FROM users LIKE 'deleted_at'");
+            $check_del_stmt->execute();
+            $has_deleted_at = $check_del_stmt->rowCount() > 0;
             
-            // OPTION 2: HARD DELETE (Remove from database completely)
-            // Uncomment below if you want to permanently delete
-            /*
-            // Archive user data first
-            $archive_stmt = $pdo->prepare("INSERT INTO deleted_users_archive 
-                                          SELECT *, NOW() as deleted_at, ? as deletion_reason 
-                                          FROM users WHERE id = ?");
-            $archive_stmt->execute([$reason, $user_id]);
+            // Check if deletion_reason column exists
+            $check_reason_stmt = $pdo->prepare("SHOW COLUMNS FROM users LIKE 'deletion_reason'");
+            $check_reason_stmt->execute();
+            $has_deletion_reason = $check_reason_stmt->rowCount() > 0;
             
-            // Delete user's payments
-            $delete_payments = $pdo->prepare("DELETE FROM payments WHERE user_id = ?");
-            $delete_payments->execute([$user_id]);
+            // Build the update query based on available columns
+            $update_fields = [];
+            $update_values = [];
             
-            // Delete user's bills
-            $delete_bills = $pdo->prepare("DELETE FROM bills WHERE user_id = ?");
-            $delete_bills->execute([$user_id]);
+            // Always set admin_approved to 0
+            $update_fields[] = "admin_approved = 0";
             
-            // Delete the user
-            $delete_user = $pdo->prepare("DELETE FROM users WHERE id = ?");
-            $delete_user->execute([$user_id]);
-            */
+            // Set is_active to 0 if column exists
+            if ($has_is_active) {
+                $update_fields[] = "is_active = 0";
+            }
             
-            // Commit transaction
-            $pdo->commit();
+            // Set deleted_at if column exists
+            if ($has_deleted_at) {
+                $update_fields[] = "deleted_at = NOW()";
+            }
             
-            // Clear session and redirect to registration page
+            // Set deletion_reason if column exists
+            if ($has_deletion_reason) {
+                $update_fields[] = "deletion_reason = ?";
+                $update_values[] = $reason;
+            }
+            
+            // Add user_id for WHERE clause
+            $update_values[] = $user_id;
+            
+            // Build and execute the query
+            $sql = "UPDATE users SET " . implode(", ", $update_fields) . " WHERE id = ?";
+            $delete_stmt = $pdo->prepare($sql);
+            $delete_stmt->execute($update_values);
+            
+            // Clear session and redirect
             session_destroy();
             
-            // Show success message on registration page
+            // Redirect to registration page with success message
             $_SESSION['account_deleted'] = true;
-            header("Location: ../register.php?message=account_deleted");
+            $_SESSION['message'] = "Your account has been successfully deactivated. You can register again using the same email and phone.";
+            header("Location: ../register.php");
             exit();
             
         } catch (PDOException $e) {
-            $pdo->rollBack();
-            $message = "Error deleting account: " . $e->getMessage();
+            $message = "Error: " . $e->getMessage();
             $message_type = "error";
         }
     } else {
@@ -325,13 +335,13 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             font-weight: 500;
         }
         
-        .deletion-note {
-            background: #e8f4f8;
-            border: 1px solid #b6e0fe;
+        .reactivation-info {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
             border-radius: 4px;
             padding: 1rem;
             margin-top: 1.5rem;
-            color: #075B5E;
+            color: #155724;
         }
         
         @media (max-width: 768px) {
@@ -386,8 +396,8 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 <div class="warning-icon">
                     <i data-lucide="alert-triangle"></i>
                 </div>
-                <h1 style="color: #721c24;">Delete Account</h1>
-                <p style="color: #666;">This action cannot be undone</p>
+                <h1 style="color: #721c24;">Deactivate Account</h1>
+                <p style="color: #666;">Your account will be deactivated and you can register again</p>
             </div>
             
             <!-- Messages -->
@@ -422,28 +432,27 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 </div>
             </div>
             
-            <!-- Important Note -->
-            <div class="deletion-note">
-                <h4 style="margin: 0 0 0.5rem 0; color: #075B5E;">
-                    <i data-lucide="info"></i> Important Information
+            <!-- Reactivation Info -->
+            <div class="reactivation-info">
+                <h4 style="margin: 0 0 0.5rem 0; color: #155724;">
+                    <i data-lucide="info"></i> Important: Reactivation Possible
                 </h4>
                 <p style="margin: 0; font-size: 0.9rem;">
-                    After account deletion, your email and phone number will be released and can be used to create a new account. 
-                    All your personal data will be permanently removed from our active systems.
+                    After deactivation, your email and phone number can be used to register a new account. 
+                    You'll need to go through the registration process again as a new user.
                 </p>
             </div>
             
             <!-- Warning Box -->
             <div class="danger-box">
-                <h4><i data-lucide="alert-circle"></i> Permanent Account Deletion</h4>
-                <p>You are about to permanently delete your BillPay Pro account. Please read the following carefully:</p>
+                <h4><i data-lucide="alert-circle"></i> Account Deactivation</h4>
+                <p>You are about to deactivate your BillPay Pro account. Here's what will happen:</p>
                 <ul class="consequences-list">
-                    <li>All your personal information will be permanently removed</li>
-                    <li>Your bill history and payment records will be deleted</li>
+                    <li>Your account will be marked as inactive/unapproved</li>
                     <li>You will lose access to all services immediately</li>
-                    <li>This action cannot be undone or recovered</li>
-                    <li>Any pending bills must be settled before deletion</li>
-                    <li>Your email and phone number will be available for new registration</li>
+                    <li>You can register again using the same email/phone</li>
+                    <li>New registration will be treated as a fresh account</li>
+                    <li>Pending bills must be cleared before deactivation</li>
                 </ul>
             </div>
             
@@ -463,7 +472,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 </div>
                 
                 <div class="form-group">
-                    <label for="reason">Reason for Leaving (Optional)</label>
+                    <label for="reason">Reason for Deactivation (Optional)</label>
                     <select id="reason" name="reason" class="form-control">
                         <option value="">Select a reason...</option>
                         <option value="found_better_service">Found a better service</option>
@@ -479,17 +488,17 @@ $first_letter = strtoupper(substr($initials, 0, 2));
                 
                 <div class="warning-box">
                     <h4><i data-lucide="help-circle"></i> Before You Go...</h4>
-                    <p>If you're having issues, consider these alternatives instead of deleting your account:</p>
+                    <p>If you're having issues, consider these alternatives instead of deactivating your account:</p>
                     <ul style="padding-left: 1.5rem; margin: 0.5rem 0; color: #666;">
                         <li><a href="settings.php" style="color: #075B5E;">Update your settings</a></li>
-                        <li><a href="help.php" style="color: #075B5E;">Contact support for help</a></li>
-                        <li><a href="edit_profile.php" style="color: #075B5E;">Update your profile information</a></li>
+                        <li><a href="change_password.php" style="color: #075B5E;">Change your password</a></li>
+                        <li><a href="profile.php" style="color: #075B5E;">Update your profile information</a></li>
                     </ul>
                 </div>
                 
                 <div class="form-actions">
                     <button type="submit" class="btn-danger" onclick="return confirmDelete()">
-                        <i data-lucide="trash-2"></i> Permanently Delete Account
+                        <i data-lucide="user-x"></i> Deactivate Account
                     </button>
                     <a href="dashboard.php" class="btn-secondary">
                         <i data-lucide="x"></i> Cancel
@@ -513,16 +522,16 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             const password = document.getElementById('password').value;
             
             if (confirmText !== 'DELETE MY ACCOUNT') {
-                alert('Please type "DELETE MY ACCOUNT" exactly as shown to confirm deletion.');
+                alert('Please type "DELETE MY ACCOUNT" exactly as shown to confirm deactivation.');
                 return false;
             }
             
             if (!password) {
-                alert('Please enter your password to confirm deletion.');
+                alert('Please enter your password to confirm deactivation.');
                 return false;
             }
             
-            return confirm('⚠️ FINAL WARNING: This will permanently delete your account and all associated data.\n\n• Your email and phone will be available for new registration\n• All your data will be removed\n• This action cannot be undone\n\nAre you absolutely sure?');
+            return confirm('⚠️ ACCOUNT DEACTIVATION:\n\n• Your account will be marked as inactive\n• You will lose access immediately\n• Your email/phone can be used for new registration\n• New registration = fresh start\n\nAre you sure you want to proceed?');
         }
         
         // Form validation
@@ -535,7 +544,7 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             // Show loading state
             const submitBtn = this.querySelector('button[type="submit"]');
             const originalText = submitBtn.innerHTML;
-            submitBtn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Deleting Account...';
+            submitBtn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Deactivating Account...';
             submitBtn.disabled = true;
             
             // Create spin animation
@@ -551,5 +560,6 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             return true;
         });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

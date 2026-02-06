@@ -4,6 +4,16 @@ ob_start();
 
 session_start();
 
+// Check for redirect data from payment_process.php
+if (isset($_SESSION['payment_redirect_data'])) {
+    $_SESSION['payment_session'] = [
+        'bill_id' => $_SESSION['payment_redirect_data']['bill_id'],
+        'transaction_id' => $_SESSION['payment_redirect_data']['transaction_id'],
+        'created_at' => time()
+    ];
+    unset($_SESSION['payment_redirect_data']);
+}
+
 // EXTREME DEBUGGING
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -18,9 +28,41 @@ error_log("========== PAYMENT PAGE ACCESSED ==========");
 error_log("Time: " . date('Y-m-d H:i:s'));
 error_log("Session ID: " . session_id());
 error_log("User ID in session: " . ($_SESSION['user_id'] ?? 'NOT SET'));
-error_log("POST Data: " . print_r($_POST, true));
 error_log("GET Data: " . print_r($_GET, true));
 error_log("Session Data: " . print_r($_SESSION, true));
+
+// Check mode parameter
+$mode = isset($_GET['mode']) ? $_GET['mode'] : 'gateway';
+$show_qr_code = ($mode !== 'gateway'); // Hide QR code for gateway mode
+error_log("Mode: " . $mode . ", Show QR: " . ($show_qr_code ? 'YES' : 'NO'));
+
+// Check for auto-fill parameter (from QR scanning)
+$auto_fill = isset($_GET['auto_fill']) && $_GET['auto_fill'] == '1';
+$prefilled_mobile = $auto_fill ? '9800000001' : '';
+$prefilled_mpin = $auto_fill ? '1234' : '';
+error_log("Auto fill: " . ($auto_fill ? 'YES' : 'NO'));
+
+// Check for scan complete parameter
+$scan_complete = isset($_GET['scan_complete']) && $_GET['scan_complete'] == '1';
+
+// IMPORTANT: If coming from QR scan with auto-fill, HIDE the QR code section
+if ($auto_fill || $scan_complete) {
+    $show_qr_code = false;
+    error_log("QR code HIDDEN because coming from QR scan with auto-fill");
+}
+
+// DEBUG: Quick test to see if POST is working
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    error_log("=== FORM SUBMITTED ===");
+    error_log("POST Data: " . print_r($_POST, true));
+    error_log("Session ID: " . session_id());
+    error_log("User ID: " . ($_SESSION['user_id'] ?? 'NOT SET'));
+    
+    // Check if credentials are valid
+    $mobile = $_POST['mobile'] ?? '';
+    $mpin = $_POST['mpin'] ?? '';
+    error_log("Mobile: $mobile, MPIN: $mpin");
+}
 
 // Log errors
 $log_dir = __DIR__ . '/../logs/';
@@ -44,14 +86,17 @@ if (!isset($_SESSION['payment_session'])) {
 $payment_session = $_SESSION['payment_session'];
 $user_id = $_SESSION['user_id'];
 
-// Get bill details
+// Get bill details - UPDATED TO GET FINAL_AMOUNT
 $stmt = $pdo->prepare("SELECT 
     b.*, 
     u.full_name, 
     u.phone, 
     u.email,
     u.customer_code,
-    COALESCE(b.amount, b.final_amount, b.total_amount, 0) as amount,
+    b.final_amount as amount,
+    b.amount as base_amount,
+    b.tax_amount,
+    b.late_fee as service_charge,
     u.id as user_id
     FROM bills b 
     JOIN users u ON b.user_id = u.id 
@@ -85,18 +130,53 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
     error_log("Valid customer: " . ($valid_customer ? 'YES' : 'NO'));
     error_log("Valid admin: " . ($valid_admin ? 'YES' : 'NO'));
     
+    // DEBUG: Check if we're even entering this block
+    error_log("Entering payment processing block...");
+    
     if ($valid_customer || $valid_admin) {
+        error_log("Credentials VALID - Starting transaction...");
         $is_admin = $valid_admin;
         
         try {
             error_log("Starting database transaction...");
-            $pdo->beginTransaction();
             
-            // Get payment amount
-            $payment_amount = $bill['amount'] ?? $bill['final_amount'] ?? $bill['total_amount'] ?? 0;
+            // DEBUG: Check PDO connection
+            error_log("PDO connection status: " . ($pdo ? "Connected" : "NOT CONNECTED"));
+            
+            // Test a simple query first
+            try {
+                $testStmt = $pdo->query("SELECT 1 as test");
+                $testResult = $testStmt->fetch();
+                error_log("Database test query: " . ($testResult['test'] ?? 'FAILED'));
+            } catch (Exception $e) {
+                error_log("Database test query failed: " . $e->getMessage());
+                throw $e;
+            }
+            
+            // FIRST: Check payments table structure
+            error_log("Checking payments table structure...");
+            try {
+                $checkStmt = $pdo->query("SHOW COLUMNS FROM payments");
+                $columns = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
+                $column_names = array_column($columns, 'Field');
+                error_log("Payments table columns found: " . implode(', ', $column_names));
+                
+                // Log full column details
+                foreach ($columns as $col) {
+                    error_log("Column: " . $col['Field'] . " | Type: " . $col['Type']);
+                }
+            } catch (Exception $e) {
+                error_log("Error checking table structure: " . $e->getMessage());
+            }
+            
+            $pdo->beginTransaction();
+            error_log("Transaction started successfully");
+            
+            // Get payment amount - UPDATED: Use final_amount
+            $payment_amount = $bill['final_amount'] ?? $bill['amount'] ?? $bill['total_amount'] ?? 0;
             $transaction_id = $payment_session['transaction_id'];
             
-            error_log("Payment Amount: " . $payment_amount);
+            error_log("Payment Amount (FINAL): " . $payment_amount);
             error_log("Transaction ID: " . $transaction_id);
             
             // 1. Update bill status
@@ -105,31 +185,43 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
                                   status = 'completed', 
                                   paid_at = NOW() 
                                   WHERE id = ?");
-            $stmt->execute([$bill['id']]);
-            error_log("Bill updated: " . $bill['id']);
+            $update_result = $stmt->execute([$bill['id']]);
+            error_log("Bill updated: " . $bill['id'] . " - Rows affected: " . $stmt->rowCount());
             
-            // 2. Insert payment record
-            $stmt = $pdo->prepare("INSERT INTO payments (
-                                  bill_id, 
-                                  customer_id, 
-                                  amount, 
-                                  payment_method, 
-                                  payment_date,
-                                  transaction_id,
-                                  status,
-                                  created_by
-                                  ) VALUES (?, ?, ?, 'esewa', CURDATE(), ?, 'completed', ?)");
+            // 2. Insert payment record - Use correct column names from your table
+            $payment_id = null;
+            $payment_result = false;
             
-            $stmt->execute([
-                $bill['id'],
-                $user_id,
-                $payment_amount,
-                $transaction_id,
-                $user_id
-            ]);
-            
-            $payment_id = $pdo->lastInsertId();
-            error_log("Payment record created: " . $payment_id);
+            // Based on your payments table structure, use this:
+            try {
+                error_log("Inserting payment record with your table structure...");
+                $stmt = $pdo->prepare("INSERT INTO payments (
+                                      bill_id, 
+                                      user_id, 
+                                      amount, 
+                                      payment_method, 
+                                      payment_date,
+                                      transaction_id,
+                                      status,
+                                      created_by
+                                      ) VALUES (?, ?, ?, 'esewa', CURDATE(), ?, 'completed', ?)");
+                
+                $payment_result = $stmt->execute([
+                    $bill['id'],
+                    $user_id,
+                    $payment_amount,
+                    $transaction_id,
+                    $user_id  // created_by (using user_id)
+                ]);
+                
+                if ($payment_result) {
+                    $payment_id = $pdo->lastInsertId();
+                    error_log("Payment record created with ID: " . $payment_id);
+                }
+            } catch (Exception $e) {
+                error_log("Payment insert failed: " . $e->getMessage());
+                throw $e;
+            }
             
             // 3. Create admin notification
             $admin_message = "eSewa Payment Received - Amount: ₹" . number_format($payment_amount, 2) . 
@@ -140,24 +232,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
                             ($is_admin ? " - Via: Admin QR Scan" : "");
             
             // Insert into admin_notifications
-            $stmt = $pdo->prepare("INSERT INTO admin_notifications (title, message, type) VALUES (?, ?, 'payment')");
-            $stmt->execute(['Payment Received', $admin_message]);
-            error_log("Admin notification created");
+            try {
+                $stmt = $pdo->prepare("INSERT INTO admin_notifications (title, message, type) VALUES (?, ?, 'payment')");
+                $admin_notify_result = $stmt->execute(['Payment Received', $admin_message]);
+                error_log("Admin notification created: " . ($admin_notify_result ? 'YES' : 'NO'));
+            } catch (Exception $e) {
+                error_log("Admin notification failed (continuing): " . $e->getMessage());
+            }
             
             // 4. Create user notification
             $user_message = "Payment Successful - Amount: ₹" . number_format($payment_amount, 2) . 
                            " - Bill: #" . $bill['bill_number'] . 
                            " - Transaction: " . $transaction_id;
             
-            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Payment Successful', ?, 'payment')");
-            $stmt->execute([$user_id, $user_message]);
-            error_log("User notification created");
+            try {
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) VALUES (?, 'Payment Successful', ?, 'payment')");
+                $user_notify_result = $stmt->execute([$user_id, $user_message]);
+                error_log("User notification created: " . ($user_notify_result ? 'YES' : 'NO'));
+            } catch (Exception $e) {
+                error_log("User notification failed (continuing): " . $e->getMessage());
+            }
             
             // 5. Also notify all admin users
-            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) 
-                                  SELECT id, 'New Payment Received', ?, 'payment' FROM users WHERE user_type = 'admin'");
-            $stmt->execute([$admin_message]);
-            error_log("Admin users notified");
+            try {
+                $stmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type) 
+                                      SELECT id, 'New Payment Received', ?, 'payment' FROM users WHERE user_type = 'admin' OR is_admin = 1");
+                $all_admin_notify_result = $stmt->execute([$admin_message]);
+                error_log("Admin users notified: " . ($all_admin_notify_result ? 'YES' : 'NO'));
+            } catch (Exception $e) {
+                error_log("Error notifying admin users (continuing): " . $e->getMessage());
+                // Continue anyway, don't fail the whole transaction
+            }
             
             $pdo->commit();
             error_log("Transaction committed successfully");
@@ -168,23 +273,35 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
                 'amount' => $payment_amount,
                 'bill_number' => $bill['bill_number'],
                 'admin_scan' => $is_admin,
-                'payment_id' => $payment_id
+                'payment_id' => $payment_id,
+                'payment_time' => date('Y-m-d H:i:s')  // Store current time
             ];
             
             // Clear payment session
             unset($_SESSION['payment_session']);
             
             error_log("Redirecting to payment_success.php");
+            error_log("Payment success session data: " . print_r($_SESSION['payment_success'], true));
+            
+            // IMPORTANT: Flush output buffer before redirect
+            if (ob_get_length()) {
+                ob_end_clean();
+            }
             
             // Redirect to success page
             header("Location: payment_success.php");
             exit();
             
         } catch (Exception $e) {
-            $pdo->rollBack();
+            if (isset($pdo)) {
+                $pdo->rollBack();
+            }
             $error = "Payment processing failed. Please try again.";
             error_log("Payment Error: " . $e->getMessage());
             error_log("Error Trace: " . $e->getTraceAsString());
+            
+            // Show error on page for debugging
+            $error .= "<br><small>Error: " . htmlspecialchars($e->getMessage()) . "</small>";
         }
     } else {
         $error = "Invalid credentials. Use: Mobile: 9800000001, MPIN: 1234";
@@ -192,9 +309,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['simulate_payment'])) {
     }
 }
 
-// Generate QR code
-$qr_data = PaymentConfig::generateEsewaQRData($bill['amount'], $payment_session['transaction_id']);
-$qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" . urlencode($qr_data);
+// Generate QR code (only if we need to show it) - UPDATED: Use final_amount for QR
+$qr_url = "";
+if ($show_qr_code) {
+    $qr_data = PaymentConfig::generateEsewaQRData($bill['amount'], $payment_session['transaction_id']);
+    $qr_url = "https://chart.googleapis.com/chart?chs=250x250&cht=qr&chl=" . urlencode($qr_data);
+}
+
+// Check if admin scan mode
+$admin_scan_mode = isset($_GET['admin_scan']) && $_GET['admin_scan'] == 'true';
+
+// Check if this is a QR scan redirect
+$is_qr_redirect = $scan_complete || $auto_fill;
 
 // Flush debug buffer
 ob_end_flush();
@@ -243,6 +369,12 @@ ob_end_flush();
             color: #721c24;
         }
         
+        .alert-success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
         .payment-detail {
             display: flex;
             justify-content: space-between;
@@ -257,25 +389,170 @@ ob_end_flush();
             padding-top: 2rem;
             border-top: 1px solid #eee;
             grid-column: 1 / -1;
+            <?php if (!$show_qr_code): ?>
+                display: none;
+            <?php endif; ?>
         }
         
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        
+        /* Debug info styling */
+        #debugInfo {
+            background: #f0f0f0;
+            padding: 10px;
+            margin: 10px;
+            border: 2px solid red;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        
+        #debugInfo h4 {
+            margin-top: 0;
+            color: #d00;
+        }
+        
+        /* Loading overlay */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            font-size: 1.2rem;
+            flex-direction: column;
+        }
+        
+        #loadingOverlay i {
+            width: 3rem;
+            height: 3rem;
+            margin-bottom: 1rem;
+            animation: spin 1s linear infinite;
+        }
+        
+        .mode-indicator {
+            background: #ffc107;
+            color: #856404;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .qr-toggle-btn {
+            background: #53c41a;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin: 1rem auto;
+        }
+        
+        .qr-toggle-btn:hover {
+            background: #389e0d;
+        }
+        
+        .mode-info {
+            background: #e8f4fd;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            border-left: 4px solid #3498db;
+        }
+        
+        .auto-fill-badge {
+            background: #27ae60;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+        
+        .form-field-note {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        
+        .qr-redirect-notice {
+            background: #d4edda;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid #27ae60;
+            display: <?php echo $is_qr_redirect ? 'block' : 'none'; ?>;
+        }
+        
+        .bill-breakdown {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 0.5rem 0;
+            border-left: 3px solid #3498db;
+        }
+        
+        .breakdown-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 0.3rem 0;
+        }
+        
+        .total-payable {
+            border-top: 2px solid #3498db;
+            padding-top: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 1.1rem;
+            font-weight: bold;
+        }
+        
+        @media (max-width: 768px) {
+            .payment-body {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <?php include '../includes/header.php'; ?>
     
-    <!-- Debug Section -->
-    <div style="background: #f0f0f0; padding: 10px; margin: 10px; border: 2px solid red; display: none;" id="debugInfo">
+    <!-- Debug Section - Visible for testing -->
+    <div id="debugInfo" style="display: <?php echo isset($_GET['debug']) ? 'block' : 'none'; ?>">
         <h4>Debug Information:</h4>
         <p>Session ID: <?php echo session_id(); ?></p>
         <p>User ID: <?php echo $_SESSION['user_id']; ?></p>
-        <p>Bill ID: <?php echo $payment_session['bill_id']; ?></p>
-        <p>Transaction ID: <?php echo $payment_session['transaction_id']; ?></p>
-        <p>Bill Amount: <?php echo $bill['amount']; ?></p>
+        <?php if (isset($_SESSION['payment_session'])): ?>
+            <p>Bill ID: <?php echo $payment_session['bill_id']; ?></p>
+            <p>Transaction ID: <?php echo $payment_session['transaction_id']; ?></p>
+        <?php else: ?>
+            <p>Bill ID: NO PAYMENT SESSION</p>
+        <?php endif; ?>
+        <p>Base Amount: ₹<?php echo number_format($bill['base_amount'] ?? $bill['amount'], 2); ?></p>
+        <p>Tax Amount: ₹<?php echo number_format($bill['tax_amount'] ?? 0, 2); ?></p>
+        <p>Service Charge: ₹<?php echo number_format($bill['service_charge'] ?? 0, 2); ?></p>
+        <p>Final Amount: ₹<?php echo number_format($bill['amount'], 2); ?></p>
+        <p>Mode: <?php echo $mode; ?></p>
+        <p>Show QR Code: <?php echo $show_qr_code ? 'YES' : 'NO'; ?></p>
+        <p>Auto Fill: <?php echo $auto_fill ? 'YES' : 'NO'; ?></p>
+        <p>Scan Complete: <?php echo $scan_complete ? 'YES' : 'NO'; ?></p>
         <p>POST Method Used: <?php echo $_SERVER['REQUEST_METHOD']; ?></p>
         <?php if ($_SERVER['REQUEST_METHOD'] == 'POST'): ?>
             <p>Form Submitted: YES</p>
@@ -284,6 +561,9 @@ ob_end_flush();
         <?php else: ?>
             <p>Form Submitted: NO</p>
         <?php endif; ?>
+        <p>Error: <?php echo $error ? htmlspecialchars($error) : 'None'; ?></p>
+        <p><a href="?debug=1" style="color: blue;">Refresh Debug</a> | 
+           <a href="<?php echo strtok($_SERVER["REQUEST_URI"], '?'); ?>" style="color: blue;">Hide Debug</a></p>
     </div>
     
     <div class="container">
@@ -292,6 +572,23 @@ ob_end_flush();
                 <i data-lucide="smartphone" style="width: 3rem; height: 3rem; margin-bottom: 1rem;"></i>
                 <h1>eSewa Payment Gateway</h1>
                 <p>Secure Digital Payment</p>
+                <div class="mode-indicator">
+                    <i data-lucide="<?php echo $mode == 'gateway' ? 'smartphone' : 'qrcode'; ?>"></i>
+                    Mode: <?php 
+                        if ($mode == 'qr' && $auto_fill) {
+                            echo 'QR Payment (Scanned)';
+                        } elseif ($mode == 'qr') {
+                            echo 'QR Payment';
+                        } else {
+                            echo 'Gateway Payment';
+                        }
+                    ?>
+                    <?php if ($auto_fill): ?>
+                        <div class="auto-fill-badge" style="margin-top: 0.5rem;">
+                            <i data-lucide="check-circle"></i> Auto-filled from QR scan
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div>
             
             <div class="payment-body">
@@ -299,33 +596,100 @@ ob_end_flush();
                 <div>
                     <h3>Login to Pay</h3>
                     
+                    <?php if ($is_qr_redirect): ?>
+                        <div class="qr-redirect-notice" id="qrRedirectNotice">
+                            <h4><i data-lucide="qrcode"></i> QR Code Scanned Successfully!</h4>
+                            <p>Credentials have been auto-filled from the QR code scan.</p>
+                            <p><strong>Mobile:</strong> 9800000001 | <strong>MPIN:</strong> 1234</p>
+                        </div>
+                    <?php endif; ?>
+                    
                     <?php if ($error): ?>
                         <div class="alert alert-danger">
-                            <i data-lucide="alert-circle"></i> <?php echo $error; ?>
+                            <i data-lucide="alert-circle"></i> 
+                            <strong>Payment Error:</strong> <?php echo $error; ?>
+                            <?php if (strpos($error, 'Error:') !== false): ?>
+                                <br><small style="font-size: 0.8em; opacity: 0.8;">Check error log for details</small>
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <?php if (isset($_GET['success']) && $_GET['success'] == '1'): ?>
+                        <div class="alert alert-success">
+                            <i data-lucide="check-circle"></i> 
+                            <strong>Payment Successful!</strong> Redirecting to receipt...
+                        </div>
+                    <?php endif; ?>
+                    
+                    <?php if ($admin_scan_mode): ?>
+                        <div class="mode-info">
+                            <h4><i data-lucide="camera"></i> Admin Scanner Mode</h4>
+                            <p>You are scanning a customer's QR code as an administrator.</p>
+                            <p><strong>Transaction ID:</strong> <?php echo htmlspecialchars($_GET['transaction_id'] ?? $payment_session['transaction_id']); ?></p>
                         </div>
                     <?php endif; ?>
                     
                     <form method="POST" id="paymentForm">
                         <div class="form-group">
                             <label><i data-lucide="phone"></i> Mobile Number</label>
-                            <input type="text" name="mobile" value="9800000001" required class="form-control">
+                            <input type="text" name="mobile" 
+                                   value="<?php 
+                                       if ($admin_scan_mode) {
+                                           echo 'admin';
+                                       } elseif ($auto_fill) {
+                                           echo '9800000001';
+                                       } else {
+                                           echo '';
+                                       }
+                                   ?>" 
+                                   required class="form-control" id="mobileInput">
+                            <?php if ($auto_fill): ?>
+                                <div class="form-field-note">
+                                    <i data-lucide="info" style="width: 0.9rem; height: 0.9rem;"></i>
+                                    Auto-filled from QR code scan
+                                </div>
+                            <?php endif; ?>
                         </div>
                         
                         <div class="form-group">
                             <label><i data-lucide="lock"></i> MPIN</label>
-                            <input type="password" name="mpin" value="1234" required maxlength="4" class="form-control">
+                            <input type="password" name="mpin" 
+                                   value="<?php 
+                                       if ($admin_scan_mode) {
+                                           echo 'admin123';
+                                       } elseif ($auto_fill) {
+                                           echo '1234';
+                                       } else {
+                                           echo '';
+                                       }
+                                   ?>" 
+                                   required maxlength="6" class="form-control" id="mpinInput">
+                            <?php if ($auto_fill): ?>
+                                <div class="form-field-note">
+                                    <i data-lucide="info" style="width: 0.9rem; height: 0.9rem;"></i>
+                                    Auto-filled from QR code scan
+                                </div>
+                            <?php endif; ?>
                         </div>
                         
+                        <input type="hidden" name="simulate_payment" value="1">
+                        
+                        <!-- UPDATED: Show final amount in payment button -->
                         <button type="submit" name="simulate_payment" class="btn btn-success" style="width: 100%; padding: 1rem;">
                             <i data-lucide="credit-card"></i> Pay ₹<?php echo number_format($bill['amount'], 2); ?>
                         </button>
+                        
+                        <div style="text-align: center; margin-top: 1rem;">
+                            <small style="color: #666;">
+                                <i data-lucide="info"></i> 
+                                <?php if ($auto_fill): ?>
+                                    Click "Pay" to complete payment with auto-filled credentials
+                                <?php else: ?>
+                                    Click once and wait for processing
+                                <?php endif; ?>
+                            </small>
+                        </div>
                     </form>
-                    
-                    <div style="background: #fff3cd; padding: 1rem; border-radius: 5px; margin-top: 1rem;">
-                        <h4><i data-lucide="info"></i> Demo Credentials</h4>
-                        <p><strong>Customer:</strong> 9800000001 / 1234</p>
-                        <p><strong>Admin:</strong> admin / admin123</p>
-                    </div>
                 </div>
                 
                 <!-- Right: Payment Details -->
@@ -342,105 +706,229 @@ ob_end_flush();
                         </div>
                         <div class="payment-detail">
                             <span>Customer:</span>
-                            <strong><?php echo $_SESSION['full_name']; ?></strong>
+                            <strong><?php echo htmlspecialchars($_SESSION['full_name']); ?></strong>
                         </div>
                         <div class="payment-detail">
                             <span>Customer Code:</span>
-                            <strong><?php echo $bill['customer_code'] ?? 'N/A'; ?></strong>
+                            <strong><?php echo htmlspecialchars($bill['customer_code'] ?? 'N/A'); ?></strong>
                         </div>
-                        <div class="payment-detail">
-                            <span>Amount:</span>
-                            <strong style="color: #e74c3c;">₹<?php echo number_format($bill['amount'], 2); ?></strong>
+                        
+                        <!-- UPDATED: Add bill breakdown -->
+                        <div class="bill-breakdown">
+                            <div class="breakdown-item">
+                                <span>Base Amount:</span>
+                                <span>₹<?php echo number_format($bill['base_amount'] ?? $bill['amount'], 2); ?></span>
+                            </div>
+                            <div class="breakdown-item">
+                                <span>Tax (<?php echo $bill['tax_rate'] ?? '13'; ?>%):</span>
+                                <span>₹<?php echo number_format($bill['tax_amount'] ?? 0, 2); ?></span>
+                            </div>
+                            <div class="breakdown-item">
+                                <span>Service Charge:</span>
+                                <span>₹<?php echo number_format($bill['service_charge'] ?? 0, 2); ?></span>
+                            </div>
+                            <div class="breakdown-item total-payable">
+                                <span>Total Payable:</span>
+                                <span style="color: #e74c3c; font-weight: bold;">₹<?php echo number_format($bill['amount'], 2); ?></span>
+                            </div>
                         </div>
+                        
                         <div class="payment-detail">
                             <span>Transaction ID:</span>
                             <strong><?php echo $payment_session['transaction_id']; ?></strong>
                         </div>
+                        <div class="payment-detail">
+                            <span>Payment Method:</span>
+                            <strong>
+                                <?php 
+                                if ($mode == 'qr' && $auto_fill) {
+                                    echo 'eSewa QR Code (Scanned)';
+                                } elseif ($mode == 'qr') {
+                                    echo 'eSewa QR Code';
+                                } else {
+                                    echo 'eSewa Gateway';
+                                }
+                                ?>
+                            </strong>
+                        </div>
+                        <div class="payment-detail">
+                            <span>Payment Status:</span>
+                            <strong>
+                                <?php 
+                                $status = $bill['payment_status'] ?? 'pending';
+                                $color = $status == 'paid' ? '#27ae60' : '#e74c3c';
+                                ?>
+                                <span style="color: <?php echo $color; ?>">
+                                    <?php echo ucfirst($status); ?>
+                                </span>
+                            </strong>
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Actions -->
+                    <div style="margin-top: 2rem; padding: 1rem; background: #e8f4fd; border-radius: 8px;">
+                        <h4><i data-lucide="zap"></i> Quick Actions</h4>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                            <a href="bills.php" class="btn btn-sm" style="background: #3498db; color: white;">
+                                <i data-lucide="arrow-left"></i> Back to Bills
+                            </a>
+                        </div>
+                        
+                        <?php if ($auto_fill): ?>
+                            <div style="margin-top: 1rem; padding: 0.75rem; background: #d4edda; border-radius: 5px;">
+                                <p style="margin: 0; font-size: 0.9rem;">
+                                    <i data-lucide="check-circle" style="width: 0.9rem; height: 0.9rem; margin-right: 0.3rem; vertical-align: middle;"></i>
+                                    <strong>QR Scan Complete:</strong> Credentials auto-filled
+                                </p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
-                <!-- QR Code -->
-                <div class="qr-container">
+                <!-- QR Code (Hidden for Gateway mode AND when coming from QR scan) -->
+                <?php if ($show_qr_code): ?>
+                <div class="qr-container" id="qrContainer">
                     <h3><i data-lucide="qrcode"></i> QR Code Payment</h3>
                     <div style="display: inline-block; padding: 15px; background: white; border: 2px solid #53c41a; border-radius: 10px;">
                         <img src="<?php echo $qr_url; ?>" alt="QR Code" style="width: 250px; height: 250px;">
                     </div>
                     <p style="margin-top: 1rem;">Scan this QR code with eSewa app</p>
+                    <p><small>Alternative payment method - same transaction ID</small></p>
+                    
+                    <button onclick="payWithQR()" class="qr-toggle-btn">
+                        <i data-lucide="smartphone"></i> Pay with QR Code
+                    </button>
+                    
+                    <div style="margin-top: 1rem; font-size: 0.9rem; color: #666;">
+                        <p><i data-lucide="info"></i> QR contains: Mobile: 9800000001, MPIN: 1234</p>
+                    </div>
                 </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>
     
     <?php include '../includes/footer.php'; ?>
     
-    <script>
-        lucide.createIcons();
+<script>
+    lucide.createIcons();
+    
+    // Show manual test button if debug mode
+    if (window.location.search.includes('debug=1')) {
+        document.getElementById('manualTest').style.display = 'block';
+    }
+    
+    // Manual test function
+    function manualSubmit() {
+        console.log('Manual form submission...');
+        document.querySelector('input[name="mobile"]').value = '9800000001';
+        document.querySelector('input[name="mpin"]').value = '1234';
+        document.getElementById('paymentForm').submit();
+    }
+    
+    // Show QR code function (for gateway mode)
+    function showQRCode() {
+        document.getElementById('qrContainer').style.display = 'block';
+    }
+    
+    // Pay with QR function (for QR mode)
+    function payWithQR() {
+        // Redirect to QR payment page with same transaction
+        window.location.href = 'esewa_qr_payment.php';
+    }
+    
+    // Auto-highlight credentials for QR redirects
+    document.addEventListener('DOMContentLoaded', function() {
+        <?php if ($auto_fill): ?>
+            // Highlight the auto-filled fields
+            const mobileInput = document.getElementById('mobileInput');
+            const mpinInput = document.getElementById('mpinInput');
+            
+            if (mobileInput && mpinInput) {
+                // Add visual feedback
+                mobileInput.style.borderColor = '#27ae60';
+                mobileInput.style.boxShadow = '0 0 0 2px rgba(39, 174, 96, 0.2)';
+                
+                mpinInput.style.borderColor = '#27ae60';
+                mpinInput.style.boxShadow = '0 0 0 2px rgba(39, 174, 96, 0.2)';
+                
+                // Remove highlight after 3 seconds
+                setTimeout(() => {
+                    mobileInput.style.borderColor = '';
+                    mobileInput.style.boxShadow = '';
+                    mpinInput.style.borderColor = '';
+                    mpinInput.style.boxShadow = '';
+                }, 3000);
+            }
+            
+            // Auto-focus the pay button
+            const payButton = document.querySelector('button[type="submit"]');
+            if (payButton) {
+                setTimeout(() => {
+                    payButton.focus();
+                }, 500);
+            }
+            
+            // Show a brief message about auto-fill
+            setTimeout(() => {
+                const notice = document.getElementById('qrRedirectNotice');
+                if (notice) {
+                    notice.style.opacity = '0.7';
+                    notice.style.transition = 'opacity 1s';
+                }
+            }, 3000);
+        <?php endif; ?>
+    });
+    
+    // SINGLE clean form handler
+    document.getElementById('paymentForm').addEventListener('submit', function(e) {
+        console.log('Form submission starting...');
         
-        document.getElementById('paymentForm').addEventListener('submit', function(e) {
-            console.log('Payment form submit triggered (legacy handler)');
-            const btn = this.querySelector('button[type="submit"]');
+        // Disable button and show loading
+        const btn = this.querySelector('button[type="submit"]');
+        if (btn) {
             btn.disabled = true;
             btn.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing Payment...';
-            
-            // Add loading indicator
-            const loading = document.createElement('div');
-            loading.id = 'loadingIndicator';
-            loading.style.cssText = 'background: #3498db; color: white; padding: 10px; margin: 10px 0; border-radius: 5px; text-align: center;';
-            loading.innerHTML = '<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i> Processing your payment, please wait...';
-            this.parentNode.insertBefore(loading, this.nextSibling);
-        });
-    </script>
-    
-    <script>
-        // Debug: Check if form is submitting
-        console.log('Payment page loaded');
-
-        // Check if form exists
-        const form = document.getElementById('paymentForm');
-        if (form) {
-            console.log('Form found, adding event listeners');
-            
-            // Add multiple event listeners
-            form.addEventListener('submit', function(e) {
-                console.log('Form submit event triggered');
-                
-                const btn = this.querySelector('button[type="submit"]');
-                if (btn) {
-                    console.log('Button found, disabling...');
-                    btn.disabled = true;
-                    btn.innerHTML = '<i data-lucide="loader-2"></i> Processing...';
-                    
-                    // Force icon refresh
-                    setTimeout(() => {
-                        lucide.createIcons();
-                    }, 100);
-                }
-                
-                // Don't prevent default
-                console.log('Form submission proceeding...');
-            });
-            
-            // Also try direct form.onsubmit
-            form.onsubmit = function() {
-                console.log('onsubmit triggered');
-                return true; // Allow form submission
-            };
-        } else {
-            console.error('Form not found!');
+            // Force icon refresh
+            setTimeout(() => lucide.createIcons(), 100);
         }
-
-        // Check for any JavaScript errors
-        window.onerror = function(msg, url, line) {
-            console.error('JavaScript Error:', msg, 'at', url, ':', line);
+        
+        // Add visual loading indicator
+        const loadingDiv = document.createElement('div');
+        loadingDiv.id = 'loadingOverlay';
+        loadingDiv.innerHTML = `
+            <div style="text-align: center;">
+                <i data-lucide="loader-2" style="animation: spin 1s linear infinite; width: 3rem; height: 3rem;"></i>
+                <p>Processing payment, please wait...</p>
+                <p style="font-size: 0.9rem; opacity: 0.8;">Do not refresh or close this page</p>
+            </div>
+        `;
+        document.body.appendChild(loadingDiv);
+        
+        // Allow form to submit normally
+        console.log('Form submission proceeding...');
+        return true;
+    });
+    
+    // Check for form submission errors
+    window.addEventListener('pageshow', function(event) {
+        // If page is shown from cache (back button), re-enable submit button
+        if (event.persisted) {
+            const btn = document.querySelector('#paymentForm button[type="submit"]');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i data-lucide="credit-card"></i> Pay ₹<?php echo number_format($bill["amount"], 2); ?>';
+                lucide.createIcons();
+            }
             
-            // Show error on page
-            const errorDiv = document.createElement('div');
-            errorDiv.style.cssText = 'background: #721c24; color: white; padding: 10px; margin: 10px; border-radius: 5px;';
-            errorDiv.innerHTML = '<strong>JavaScript Error:</strong> ' + msg + ' at line ' + line;
-            document.body.prepend(errorDiv);
-            
-            return false;
-        };
-    </script>
+            // Remove loading overlay if it exists
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            if (loadingOverlay) {
+                loadingOverlay.remove();
+            }
+        }
+    });
+</script>
+<script src="js/logout.js"></script>
 </body>
 </html>

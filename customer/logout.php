@@ -26,7 +26,12 @@ header("Cache-Control: no-cache, no-store, must-revalidate");
 header("Pragma: no-cache");
 header("Expires: 0");
 
-// Redirect to main index page
-header("Location: ../index.php"); // Goes to project/index.php
+// Always return JSON for AJAX requests
+header('Content-Type: application/json');
+echo json_encode([
+    'success' => true,
+    'message' => 'Successfully logged out',
+    'timestamp' => time()
+]);
 exit();
 ?>

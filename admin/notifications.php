@@ -278,5 +278,6 @@ $unread_count = $stmt->fetch()['count'];
         // Initialize icons
         lucide.createIcons();
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

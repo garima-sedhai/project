@@ -1126,5 +1126,6 @@ try {
         // Initialize Lucide Icons
         lucide.createIcons();
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

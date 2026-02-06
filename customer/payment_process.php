@@ -47,21 +47,36 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             // Store pending payment record
             storePendingPayment($pdo, $payment_session, $bill, $user_id);
             
-            // Redirect to EXISTING eSewa demo environment
-            header("Location: esewa_demo.php");
+            // FIXED: Instead of redirecting to non-existent esewa_demo.php,
+            // directly set up the session for payment_esewa.php
+            $_SESSION['payment_redirect_data'] = [
+                'bill_id' => $bill['id'],
+                'user_id' => $user_id,
+                'transaction_id' => $payment_session['transaction_id'],
+                'payment_method' => 'esewa'
+            ];
+            
+            // Redirect directly to the working payment page
+            header("Location: payment_esewa.php");
             exit();
         } elseif ($gateway == 'khalti') {
             // Store pending payment record
             storePendingPayment($pdo, $payment_session, $bill, $user_id);
             
-            // Redirect to Khalti demo environment
+            // For Khalti, still use the verification flow
             header("Location: khalti_demo.php");
             exit();
         } elseif ($gateway == 'esewa_qr') {
             // Store pending payment record
             storePendingPayment($pdo, $payment_session, $bill, $user_id);
             
-            // Redirect to QR code payment page
+            // For QR payments, redirect to QR page
+            $_SESSION['payment_redirect_data'] = [
+                'bill_id' => $bill['id'],
+                'user_id' => $user_id,
+                'transaction_id' => $payment_session['transaction_id'],
+                'payment_method' => 'esewa_qr'
+            ];
             header("Location: esewa_qr_payment.php");
             exit();
         }
@@ -530,5 +545,6 @@ function storePendingPayment($pdo, $payment_session, $bill, $user_id) {
         lucide.createIcons();
     </script>
     <script src="../js/script.js"></script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

@@ -1,4 +1,7 @@
 <?php
+header("Cache-Control: no-cache, no-store, must-revalidate");
+header("Pragma: no-cache");
+header("Expires: 0");
 // For admin files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
@@ -9,6 +12,29 @@ require_once $base_path . '/includes/db_connection.php';
 if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
     header("Location: ../customer/login.php");
     exit;
+}
+
+// DEBUG: Check if notifications are being created
+error_log("=== ADMIN DASHBOARD DEBUG ===");
+error_log("User ID: " . $_SESSION['user_id']);
+error_log("Is Admin: " . ($_SESSION['is_admin'] ? 'YES' : 'NO'));
+
+// Check notifications directly
+try {
+    $debugStmt = $pdo->query("SELECT COUNT(*) as total, SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) as unread FROM notifications");
+    $debugResult = $debugStmt->fetch();
+    error_log("Total notifications: " . $debugResult['total']);
+    error_log("Unread notifications: " . $debugResult['unread']);
+    
+    // Check payment notifications specifically
+    $debugStmt2 = $pdo->query("SELECT * FROM notifications WHERE type = 'payment' ORDER BY created_at DESC LIMIT 3");
+    $paymentNotifs = $debugStmt2->fetchAll();
+    error_log("Payment notifications found: " . count($paymentNotifs));
+    foreach ($paymentNotifs as $notif) {
+        error_log(" - " . $notif['title'] . ": " . $notif['message']);
+    }
+} catch (Exception $e) {
+    error_log("Debug query failed: " . $e->getMessage());
 }
 
 // Get statistics
@@ -59,6 +85,47 @@ try {
     $stats['total_revenue'] = 0;
 }
 
+// Get payment statistics (ADD THIS)
+try {
+    // Today's payments
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count, SUM(amount) as total 
+                          FROM payments 
+                          WHERE DATE(created_at) = CURDATE() AND status = 'completed'");
+    $stmt->execute();
+    $today_payments = $stmt->fetch();
+    $stats['today_payments'] = $today_payments['count'] ?? 0;
+    $stats['today_revenue'] = $today_payments['total'] ?? 0;
+    
+    // This month's payments
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count, SUM(amount) as total 
+                          FROM payments 
+                          WHERE MONTH(created_at) = MONTH(CURDATE()) 
+                          AND YEAR(created_at) = YEAR(CURDATE())
+                          AND status = 'completed'");
+    $stmt->execute();
+    $month_payments = $stmt->fetch();
+    $stats['month_payments'] = $month_payments['count'] ?? 0;
+    $stats['month_revenue'] = $month_payments['total'] ?? 0;
+    
+    // All payments
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count, SUM(amount) as total 
+                          FROM payments WHERE status = 'completed'");
+    $stmt->execute();
+    $all_payments = $stmt->fetch();
+    $stats['all_payments'] = $all_payments['count'] ?? 0;
+    $stats['all_revenue'] = $all_payments['total'] ?? 0;
+    
+} catch (Exception $e) {
+    // If payments table doesn't exist yet, set defaults
+    $stats['today_payments'] = 0;
+    $stats['today_revenue'] = 0;
+    $stats['month_payments'] = 0;
+    $stats['month_revenue'] = 0;
+    $stats['all_payments'] = 0;
+    $stats['all_revenue'] = 0;
+    error_log("Payment stats error: " . $e->getMessage());
+}
+
 // Get recent invoices (check if table exists first)
 $recent_invoices = [];
 try {
@@ -80,13 +147,13 @@ $stmt = $pdo->prepare("SELECT COUNT(*) as pending_approvals FROM users WHERE is_
 $stmt->execute();
 $pending_approvals = $stmt->fetch()['pending_approvals'];
 
-// Get system notifications
-$stmt = $pdo->prepare("SELECT * FROM notifications WHERE type = 'system' ORDER BY created_at DESC LIMIT 5");
+// Get ALL notifications (including payment notifications) - FIXED
+$stmt = $pdo->prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT 10");
 $stmt->execute();
 $notifications = $stmt->fetchAll();
 
-// Check for new notifications
-$stmt = $pdo->prepare("SELECT COUNT(*) as new_notifications FROM notifications WHERE type = 'system' AND is_read = FALSE");
+// Get unread notifications for header count
+$stmt = $pdo->prepare("SELECT COUNT(*) as new_notifications FROM notifications WHERE is_read = FALSE");
 $stmt->execute();
 $new_notifications_count = $stmt->fetch()['new_notifications'];
 
@@ -98,6 +165,11 @@ try {
 } catch (Exception $e) {
     $unread_admin_notifications = 0;
 }
+
+// Get recent notifications for dropdown (last 5)
+$stmt_recent = $pdo->prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT 5");
+$stmt_recent->execute();
+$recent_notifications = $stmt_recent->fetchAll();
 ?>
 
 <!DOCTYPE html>
@@ -163,6 +235,13 @@ try {
         .dashboard-card p {
             margin: 10px 0 0;
             color: #666;
+        }
+        
+        .dashboard-card small {
+            display: block;
+            margin-top: 5px;
+            color: #27ae60;
+            font-weight: bold;
         }
         
         .recent-section {
@@ -323,6 +402,23 @@ try {
             margin-top: 5px;
         }
         
+        .notification-type {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            margin-left: 5px;
+        }
+        
+        .notification-new {
+            background: #e74c3c;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            margin-left: 5px;
+        }
+        
         .empty-state {
             text-align: center;
             padding: 40px 20px;
@@ -334,6 +430,8 @@ try {
             background: #075B5E;
             padding: 1rem 0;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 1000;
         }
         
         .nav-container {
@@ -391,6 +489,7 @@ try {
             align-items: center;
             gap: 1rem;
             color: white;
+            position: relative;
         }
         
         .user-avatar {
@@ -418,13 +517,13 @@ try {
             background: rgba(255,255,255,0.3);
         }
         
-        /* Notification bell styles */
-        .notification-bell {
+        /* NEW: Notification Dropdown Styles */
+        .notification-dropdown {
             position: relative;
             margin-right: 10px;
         }
         
-        .notification-bell a {
+        .notification-trigger {
             display: flex;
             align-items: center;
             justify-content: center;
@@ -433,9 +532,13 @@ try {
             padding: 8px;
             border-radius: 50%;
             transition: background-color 0.2s;
+            cursor: pointer;
+            position: relative;
+            width: 40px;
+            height: 40px;
         }
         
-        .notification-bell a:hover {
+        .notification-trigger:hover {
             background: rgba(255,255,255,0.1);
         }
         
@@ -453,6 +556,185 @@ try {
             align-items: center;
             justify-content: center;
             font-weight: bold;
+            z-index: 11;
+        }
+        
+        .notification-panel {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            width: 400px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            margin-top: 10px;
+            z-index: 1001;
+            display: none;
+            overflow: hidden;
+            max-height: 500px;
+            animation: fadeIn 0.2s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .notification-panel.active {
+            display: block;
+        }
+        
+        .notification-panel-header {
+            padding: 15px 20px;
+            background: #075B5E;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .notification-panel-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+        
+        .notification-panel-body {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .notification-panel-footer {
+            padding: 15px 20px;
+            background: #f8f9fa;
+            border-top: 1px solid #eee;
+            text-align: center;
+        }
+        
+        .notification-dropdown-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 15px 20px;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background-color 0.2s;
+            cursor: pointer;
+        }
+        
+        .notification-dropdown-item:hover {
+            background: #f8f9fa;
+        }
+        
+        .notification-dropdown-item.unread {
+            background: #e8f4fd;
+        }
+        
+        .notification-dropdown-item.read {
+            opacity: 0.8;
+        }
+        
+        .notification-dropdown-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        
+        .notification-payment {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .notification-system {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .notification-user {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .notification-dropdown-content {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .notification-dropdown-title {
+            font-weight: 600;
+            margin: 0 0 5px 0;
+            font-size: 0.95rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        
+        .notification-dropdown-message {
+            color: #666;
+            font-size: 0.85rem;
+            margin: 0 0 5px 0;
+            line-height: 1.4;
+        }
+        
+        .notification-dropdown-time {
+            color: #999;
+            font-size: 0.75rem;
+        }
+        
+        .notification-badge-small {
+            background: #e74c3c;
+            color: white;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            margin-left: 8px;
+        }
+        
+        .view-all-link {
+            color: #075B5E;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .view-all-link:hover {
+            text-decoration: underline;
+        }
+        
+        .mark-read-btn {
+            background: transparent;
+            border: 1px solid #ddd;
+            color: #666;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            margin-top: 5px;
+        }
+        
+        .mark-read-btn:hover {
+            background: #f0f0f0;
+        }
+        
+        /* Close dropdown when clicking outside */
+        .notification-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .notification-overlay.active {
+            display: block;
         }
     </style>
 </head>
@@ -472,14 +754,78 @@ try {
                 </ul>
             </nav>
             <div class="user-info">
-                <!-- Notification Bell -->
-                <div class="notification-bell">
-                    <a href="notifications.php" title="Notifications">
+                <!-- NEW: Notification Dropdown -->
+                <div class="notification-dropdown">
+                    <div class="notification-trigger" id="notificationTrigger">
                         <i data-lucide="bell"></i>
-                        <?php if ($unread_admin_notifications > 0): ?>
-                            <span class="notification-count"><?php echo $unread_admin_notifications; ?></span>
+                        <?php if ($new_notifications_count > 0): ?>
+                            <span class="notification-count" id="notificationCount"><?php echo $new_notifications_count; ?></span>
                         <?php endif; ?>
-                    </a>
+                    </div>
+                    
+                    <!-- Notification Dropdown Panel -->
+                    <div class="notification-panel" id="notificationPanel">
+                        <div class="notification-panel-header">
+                            <h3>Notifications</h3>
+                            <div>
+                                <?php if ($new_notifications_count > 0): ?>
+                                    <span style="font-size: 0.9rem;"><?php echo $new_notifications_count; ?> new</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        
+                        <div class="notification-panel-body">
+                            <?php if (empty($recent_notifications)): ?>
+                                <div style="padding: 40px 20px; text-align: center; color: #999;">
+                                    <i data-lucide="bell-off" style="width: 40px; height: 40px; opacity: 0.5; margin-bottom: 10px;"></i>
+                                    <p>No notifications</p>
+                                </div>
+                            <?php else: ?>
+                                <?php foreach ($recent_notifications as $notification): ?>
+                                    <div class="notification-dropdown-item <?php echo $notification['is_read'] ? 'read' : 'unread'; ?>" data-id="<?php echo $notification['id']; ?>">
+                                        <div class="notification-dropdown-icon notification-<?php echo $notification['type']; ?>">
+                                            <?php if ($notification['type'] == 'payment'): ?>
+                                                <i data-lucide="credit-card" style="width: 16px; height: 16px;"></i>
+                                            <?php elseif ($notification['type'] == 'system'): ?>
+                                                <i data-lucide="bell" style="width: 16px; height: 16px;"></i>
+                                            <?php elseif ($notification['type'] == 'user'): ?>
+                                                <i data-lucide="user" style="width: 16px; height: 16px;"></i>
+                                            <?php else: ?>
+                                                <i data-lucide="info" style="width: 16px; height: 16px;"></i>
+                                            <?php endif; ?>
+                                        </div>
+                                        
+                                        <div class="notification-dropdown-content">
+                                            <div class="notification-dropdown-title">
+                                                <span><?php echo htmlspecialchars($notification['title']); ?></span>
+                                                <?php if (!$notification['is_read']): ?>
+                                                    <span class="notification-badge-small">New</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <p class="notification-dropdown-message">
+                                                <?php echo htmlspecialchars($notification['message']); ?>
+                                            </p>
+                                            <div class="notification-dropdown-time">
+                                                <?php echo date('M d, Y h:i A', strtotime($notification['created_at'])); ?>
+                                            </div>
+                                            <?php if (!$notification['is_read']): ?>
+                                                <button class="mark-read-btn" data-id="<?php echo $notification['id']; ?>">Mark as read</button>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <div class="notification-panel-footer">
+                            <a href="notifications.php" class="view-all-link">
+                                <i data-lucide="list"></i> View all notifications
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <!-- Overlay to close dropdown when clicking outside -->
+                    <div class="notification-overlay" id="notificationOverlay"></div>
                 </div>
                 
                 <div class="user-avatar">
@@ -573,19 +919,23 @@ try {
                 <p>Total Services</p>
             </div>
             
+            <!-- ADD THESE PAYMENT STATS -->
             <div class="dashboard-card">
-                <h3><?php echo $stats['total_invoices']; ?></h3>
-                <p>Total Invoices</p>
+                <h3><?php echo $stats['today_payments']; ?></h3>
+                <p>Today's Payments</p>
+                <small>₹<?php echo number_format($stats['today_revenue'], 2); ?></small>
             </div>
             
             <div class="dashboard-card">
-                <h3><?php echo $stats['pending_payments']; ?></h3>
-                <p>Pending Payments</p>
+                <h3><?php echo $stats['month_payments']; ?></h3>
+                <p>This Month</p>
+                <small>₹<?php echo number_format($stats['month_revenue'], 2); ?></small>
             </div>
             
             <div class="dashboard-card">
-                <h3>$<?php echo number_format($stats['total_revenue'], 2); ?></h3>
-                <p>Total Revenue</p>
+                <h3><?php echo $stats['all_payments']; ?></h3>
+                <p>Total Payments</p>
+                <small>₹<?php echo number_format($stats['all_revenue'], 2); ?></small>
             </div>
             
             <div class="dashboard-card">
@@ -642,10 +992,8 @@ try {
             <!-- Notifications -->
             <div class="recent-section">
                 <div class="section-title">
-                    <h2>Notifications</h2>
-                    <?php if ($new_notifications_count > 0): ?>
-                        <span class="notification-badge"><?php echo $new_notifications_count; ?></span>
-                    <?php endif; ?>
+                    <h2>Recent Notifications</h2>
+                    <a href="notifications.php" class="btn">View All</a>
                 </div>
                 
                 <?php if (empty($notifications)): ?>
@@ -657,12 +1005,28 @@ try {
                     <div>
                         <?php foreach ($notifications as $notification): ?>
                             <div class="notification-item">
-                                <i data-lucide="bell" style="width: 20px; height: 20px; color: #075B5E; margin-top: 3px;"></i>
+                                <?php if ($notification['type'] == 'payment'): ?>
+                                    <i data-lucide="credit-card" style="width: 20px; height: 20px; color: #27ae60; margin-top: 3px;"></i>
+                                <?php elseif ($notification['type'] == 'system'): ?>
+                                    <i data-lucide="bell" style="width: 20px; height: 20px; color: #075B5E; margin-top: 3px;"></i>
+                                <?php elseif ($notification['type'] == 'user'): ?>
+                                    <i data-lucide="user" style="width: 20px; height: 20px; color: #3498db; margin-top: 3px;"></i>
+                                <?php else: ?>
+                                    <i data-lucide="info" style="width: 20px; height: 20px; color: #f39c12; margin-top: 3px;"></i>
+                                <?php endif; ?>
                                 <div class="notification-content">
                                     <strong><?php echo htmlspecialchars($notification['title']); ?></strong>
                                     <p style="margin: 5px 0 0; font-size: 0.9rem;"><?php echo htmlspecialchars($notification['message']); ?></p>
                                     <div class="notification-time">
                                         <?php echo date('M d, Y h:i A', strtotime($notification['created_at'])); ?>
+                                        <?php if ($notification['type']): ?>
+                                            <span class="notification-type">
+                                                <?php echo ucfirst($notification['type']); ?>
+                                            </span>
+                                        <?php endif; ?>
+                                        <?php if (!$notification['is_read']): ?>
+                                            <span class="notification-new">New</span>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             </div>
@@ -698,6 +1062,191 @@ try {
                 }
             });
         });
+
+        // NEW: Notification Dropdown Functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const notificationTrigger = document.getElementById('notificationTrigger');
+            const notificationPanel = document.getElementById('notificationPanel');
+            const notificationOverlay = document.getElementById('notificationOverlay');
+            
+            if (notificationTrigger && notificationPanel) {
+                console.log('✅ Notification dropdown system initialized');
+                
+                // Toggle dropdown when clicking bell
+                notificationTrigger.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    notificationPanel.classList.toggle('active');
+                    notificationOverlay.classList.toggle('active');
+                    console.log('🔔 Notification panel toggled');
+                });
+                
+                // Close dropdown when clicking overlay
+                notificationOverlay.addEventListener('click', function() {
+                    notificationPanel.classList.remove('active');
+                    notificationOverlay.classList.remove('active');
+                    console.log('📌 Notification panel closed (overlay)');
+                });
+                
+                // Close dropdown when clicking outside
+                document.addEventListener('click', function(e) {
+                    if (!notificationPanel.contains(e.target) && !notificationTrigger.contains(e.target)) {
+                        notificationPanel.classList.remove('active');
+                        notificationOverlay.classList.remove('active');
+                    }
+                });
+                
+                // Mark as read functionality
+                const markReadButtons = document.querySelectorAll('.mark-read-btn');
+                markReadButtons.forEach(button => {
+                    button.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const notificationId = this.dataset.id;
+                        const notificationItem = this.closest('.notification-dropdown-item');
+                        
+                        console.log('Marking notification as read:', notificationId);
+                        
+                        // AJAX call to mark as read
+                        fetch('mark_notification_read.php', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ id: notificationId })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                console.log('✅ Notification marked as read');
+                                
+                                // Update UI
+                                notificationItem.classList.remove('unread');
+                                notificationItem.classList.add('read');
+                                this.remove();
+                                
+                                // Remove "New" badge
+                                const newBadge = notificationItem.querySelector('.notification-badge-small');
+                                if (newBadge) {
+                                    newBadge.remove();
+                                }
+                                
+                                // Update notification count
+                                const notificationCount = document.getElementById('notificationCount');
+                                if (notificationCount) {
+                                    const currentCount = parseInt(notificationCount.textContent);
+                                    if (currentCount > 1) {
+                                        notificationCount.textContent = currentCount - 1;
+                                    } else {
+                                        notificationCount.remove();
+                                    }
+                                }
+                                
+                                // Update panel header count
+                                const panelHeaderCount = notificationPanel.querySelector('.notification-panel-header span');
+                                if (panelHeaderCount) {
+                                    const headerCount = parseInt(panelHeaderCount.textContent.split(' ')[0]);
+                                    if (headerCount > 1) {
+                                        panelHeaderCount.textContent = (headerCount - 1) + ' new';
+                                    } else {
+                                        panelHeaderCount.remove();
+                                    }
+                                }
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error marking notification as read:', error);
+                            alert('Failed to mark notification as read. Please try again.');
+                        });
+                    });
+                });
+                
+                // Click on notification item
+                const notificationItems = document.querySelectorAll('.notification-dropdown-item');
+                notificationItems.forEach(item => {
+                    item.addEventListener('click', function(e) {
+                        if (!e.target.classList.contains('mark-read-btn')) {
+                            console.log('📝 Notification item clicked');
+                            // You could redirect to a specific notification page here
+                            // window.location.href = 'notifications.php?id=' + this.dataset.id;
+                        }
+                    });
+                });
+                
+                // Mark all as read button (optional - add if you want)
+                const markAllReadBtn = document.createElement('button');
+                markAllReadBtn.textContent = 'Mark all as read';
+                markAllReadBtn.style.cssText = 'background: #28a745; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; font-size: 0.8rem; margin-left: 10px;';
+                markAllReadBtn.addEventListener('click', function() {
+                    if (confirm('Mark all notifications as read?')) {
+                        window.location.href = 'notifications.php?mark_all_read=1';
+                    }
+                });
+                
+                // Add to panel header if you want this feature
+                // notificationPanel.querySelector('.notification-panel-header').appendChild(markAllReadBtn);
+            } else {
+                console.error('❌ Notification dropdown elements not found!');
+            }
+            
+            // Debug: Log elements
+            setTimeout(function() {
+                console.log('=== DEBUG: Notification System ===');
+                console.log('Trigger:', notificationTrigger);
+                console.log('Panel:', notificationPanel);
+                console.log('Overlay:', notificationOverlay);
+                console.log('Recent notifications count:', <?php echo count($recent_notifications); ?>);
+            }, 1000);
+        });
     </script>
+    <script>
+    // Back button handling for admin login - Allows going back to index.php
+    (function() {
+        // Check if we came from logout
+        const fromLogout = sessionStorage.getItem('admin_logout_redirect') === 'allow_back';
+        
+        if (fromLogout) {
+            // Clear the flag
+            sessionStorage.removeItem('admin_logout_redirect');
+        }
+        
+        // Set up history state to allow back navigation to index.php
+        history.replaceState({page: 'admin_login', fromLogout: fromLogout}, '', window.location.href);
+        
+        // When back button is pressed, go to index.php
+        window.addEventListener('popstate', function(event) {
+            if (event.state && event.state.page === 'admin_login') {
+                // Go to main index.php
+                window.location.href = '../index.php';
+            }
+        });
+        
+        // Add a state to ensure back button works
+        setTimeout(function() {
+            history.pushState({page: 'admin_login'}, '');
+        }, 100);
+        
+        // Add "Back to Home" link after the form
+        const backToHomeDiv = document.createElement('div');
+        backToHomeDiv.innerHTML = `
+            <div style="text-align: center; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
+                <a href="../index.php" style="color: #075B5E; text-decoration: none; font-size: 0.85rem; display: inline-flex; align-items: center; justify-content: center; gap: 5px;">
+                    <i data-lucide="home" style="width: 1rem; height: 1rem;"></i>
+                    Back to Home
+                </a>
+            </div>
+        `;
+        
+        // Insert at the end of the card
+        const card = document.querySelector('.card');
+        if (card) {
+            card.appendChild(backToHomeDiv);
+        }
+        
+        // Re-initialize icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    })();
+</script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

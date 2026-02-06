@@ -141,5 +141,6 @@ $transaction_id = isset($_GET['transaction_id']) ? $_GET['transaction_id'] : nul
         // Initialize Lucide Icons
         lucide.createIcons();
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

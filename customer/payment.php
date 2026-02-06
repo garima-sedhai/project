@@ -14,20 +14,45 @@ $bill_id = isset($_GET['bill_id']) ? $_GET['bill_id'] : null;
 // Get bill details if bill_id is provided
 $bill = null;
 if ($bill_id) {
-    $stmt = $pdo->prepare("SELECT b.*, s.service_name FROM bills b 
+    $stmt = $pdo->prepare("SELECT b.*, s.service_name, 
+                          b.final_amount as total_payable, 
+                          b.tax_amount, b.late_fee as service_charge
+                          FROM bills b 
                           LEFT JOIN services s ON b.bill_type = s.service_type 
                           WHERE b.id = ? AND b.user_id = ?");
     $stmt->execute([$bill_id, $user_id]);
     $bill = $stmt->fetch();
+    
+    if ($bill) {
+        $bill['formatted_date'] = date('M d, Y h:i A', strtotime($bill['created_at']));
+        // Calculate breakdown
+        $bill['base_amount'] = $bill['amount'];
+        $bill['total_with_tax'] = $bill['amount'] + $bill['tax_amount'];
+        $bill['final_total'] = $bill['final_amount'];
+    }
 }
 
 // Get all pending bills for the user
-$stmt = $pdo->prepare("SELECT b.*, s.service_name FROM bills b 
+$stmt = $pdo->prepare("SELECT b.*, s.service_name, 
+                      b.final_amount as total_payable, 
+                      b.tax_amount, b.late_fee as service_charge
+                      FROM bills b 
                       LEFT JOIN services s ON b.bill_type = s.service_type 
                       WHERE b.user_id = ? AND b.status = 'pending' 
                       ORDER BY b.due_date ASC");
 $stmt->execute([$user_id]);
 $pending_bills = $stmt->fetchAll();
+
+// Format and calculate for all pending bills
+foreach ($pending_bills as &$pending_bill) {
+    if (isset($pending_bill['created_at'])) {
+        $pending_bill['formatted_date'] = date('M d, Y h:i A', strtotime($pending_bill['created_at']));
+    }
+    $pending_bill['base_amount'] = $pending_bill['amount'];
+    $pending_bill['total_with_tax'] = $pending_bill['amount'] + $pending_bill['tax_amount'];
+    $pending_bill['final_total'] = $pending_bill['final_amount'];
+}
+unset($pending_bill); // Break the reference
 
 $message = '';
 $message_type = '';
@@ -49,16 +74,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
         // Store payment session
         $_SESSION['payment_session'] = [
             'bill_id' => $selected_bill_id,
-            'amount' => $selected_bill['amount'],
+            'amount' => $selected_bill['final_amount'], // Use final_amount which includes tax and service charge
             'payment_method' => $payment_method,
             'transaction_id' => $transaction_id,
             'created_at' => time()
         ];
         
-        // Redirect based on payment method - FIXED VERSION
-        if ($payment_method == 'esewa' || $payment_method == 'esewa_qr') {
-            // Redirect to eSewa payment page
-            header("Location: payment_esewa.php");
+        // Redirect based on payment method
+        if ($payment_method == 'esewa') {
+            // Redirect to eSewa gateway payment (no QR code initially)
+            header("Location: payment_esewa.php?mode=gateway");
+            exit();
+        } elseif ($payment_method == 'esewa_qr') {
+            // Redirect to QR code payment
+            header("Location: esewa_qr_payment.php");
             exit();
         } else {
             // For other payment methods (if any)
@@ -203,6 +232,42 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
             padding-top: 1.5rem;
             border-top: 1px solid #eee;
         }
+        
+        .method-description {
+            font-size: 0.9rem;
+            color: #666;
+            margin-top: 0.5rem;
+        }
+        
+        .method-highlight {
+            background: #fff3cd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            border-left: 3px solid #ffc107;
+        }
+        
+        .bill-breakdown {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 0.5rem 0;
+            border-left: 3px solid #3498db;
+        }
+        
+        .breakdown-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 0.3rem 0;
+        }
+        
+        .total-payable {
+            border-top: 2px solid #3498db;
+            padding-top: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 1.1rem;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -270,17 +335,34 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                 $is_selected = ($bill && $bill['id'] == $pending_bill['id']) || (!$bill && $pending_bill === reset($pending_bills));
                             ?>
                                 <div class="bill-item <?php echo $is_overdue ? 'overdue' : ''; ?> <?php echo $is_selected ? 'selected' : ''; ?>" 
-                                     onclick="selectBill(<?php echo $pending_bill['id']; ?>, <?php echo $pending_bill['amount']; ?>)">
+                                     onclick="selectBill(<?php echo $pending_bill['id']; ?>, <?php echo $pending_bill['final_amount']; ?>)">
                                     <input type="radio" name="bill_id" value="<?php echo $pending_bill['id']; ?>" 
                                            <?php echo $is_selected ? 'checked' : ''; ?> style="display: none;" required>
                                     <h4><?php echo $pending_bill['service_name'] ?? ucfirst($pending_bill['bill_type']); ?></h4>
-                                    <p><strong>Amount:</strong> ₹<?php echo number_format($pending_bill['amount'], 2); ?></p>
+                                    <p><strong>Base Amount:</strong> ₹<?php echo number_format($pending_bill['amount'], 2); ?></p>
+                                    <div class="bill-breakdown">
+                                        <div class="breakdown-item">
+                                            <span>Tax:</span>
+                                            <span>₹<?php echo number_format($pending_bill['tax_amount'], 2); ?></span>
+                                        </div>
+                                        <div class="breakdown-item">
+                                            <span>Service Charge:</span>
+                                            <span>₹<?php echo number_format($pending_bill['service_charge'], 2); ?></span>
+                                        </div>
+                                        <div class="breakdown-item total-payable">
+                                            <span>Total Payable:</span>
+                                            <span style="color: #e74c3c; font-weight: bold;">₹<?php echo number_format($pending_bill['final_amount'], 2); ?></span>
+                                        </div>
+                                    </div>
                                     <p><strong>Due Date:</strong> 
                                         <?php echo date('M d, Y', $due_date); ?>
                                         <?php if ($is_overdue): ?>
                                             <span style="color: #e74c3c; font-weight: bold;">(Overdue)</span>
                                         <?php endif; ?>
                                     </p>
+                                    <?php if (isset($pending_bill['formatted_date'])): ?>
+                                        <p><strong>Bill Generated:</strong> <?php echo $pending_bill['formatted_date']; ?></p>
+                                    <?php endif; ?>
                                     <?php if ($pending_bill['description']): ?>
                                         <p><strong>Description:</strong> <?php echo $pending_bill['description']; ?></p>
                                     <?php endif; ?>
@@ -295,7 +377,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                 <h3>Select Payment Method</h3>
                             </div>
                             
-                            <!-- eSewa Option -->
+                            <!-- eSewa Gateway Option -->
                             <div class="payment-method esewa-option selected" onclick="selectPaymentMethod('esewa')">
                                 <input type="radio" name="payment_method" value="esewa" checked style="display: none;" required>
                                 <div style="display: flex; align-items: center;">
@@ -303,7 +385,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                     <div style="margin-left: 15px;">
                                         <h4>eSewa Gateway</h4>
                                         <p>Pay with eSewa Wallet, Mobile Banking, or Connect IPS</p>
-                                        <small style="color: #666;">Complete eSewa payment with demo credentials</small>
+                                        <div class="method-description">
+                                            <p>Direct payment through eSewa interface</p>
+                                            <div class="method-highlight">
+                                                <i data-lucide="shield"></i> QR code section will be hidden
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -316,20 +403,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                     <div style="margin-left: 15px;">
                                         <h4>eSewa QR Code</h4>
                                         <p>Scan QR code with eSewa app or use admin scanner</p>
-                                        <small style="color: #666;">Instant QR code payment with admin scanning</small>
+                                        <div class="method-description">
+                                            <p>First shows QR code, then option to switch to gateway</p>
+                                            <div class="method-highlight">
+                                                <i data-lucide="camera"></i> QR code shown first with "Pay with QR code" button
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <div class="pay-button-container">
-                            <button type="submit" name="submit_payment" class="btn" style="width: 100%; padding: 1rem; font-size: 1.1rem;">
+                            <button type="submit" name="submit_payment" id="payButton" class="btn" style="width: 100%; padding: 1rem; font-size: 1.1rem;">
                                 <i data-lucide="arrow-right" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>
                                 Proceed to eSewa Payment
                             </button>
                             <p style="text-align: center; margin-top: 0.5rem; color: #666; font-size: 0.9rem;">
                                 <i data-lucide="info" style="width: 1rem; height: 1rem; margin-right: 0.3rem; vertical-align: middle;"></i>
-                                Click to enter eSewa demo environment
+                                Click to enter eSewa payment environment
                             </p>
                         </div>
                     </form>
@@ -351,8 +443,26 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                             <div style="padding: 1.5rem; background: #f8f9fa; border-radius: 8px;">
                                 <h3><?php echo $selected_bill['service_name'] ?? ucfirst($selected_bill['bill_type']); ?></h3>
                                 <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
-                                    <span>Bill Amount:</span>
-                                    <strong>₹<?php echo number_format($selected_bill['amount'], 2); ?></strong>
+                                    <span>Bill Number:</span>
+                                    <strong><?php echo $selected_bill['bill_number']; ?></strong>
+                                </div>
+                                <div class="bill-breakdown">
+                                    <div class="breakdown-item">
+                                        <span>Base Amount:</span>
+                                        <span>₹<?php echo number_format($selected_bill['amount'], 2); ?></span>
+                                    </div>
+                                    <div class="breakdown-item">
+                                        <span>Tax (<?php echo $selected_bill['tax_rate'] ?? '13'; ?>%):</span>
+                                        <span>₹<?php echo number_format($selected_bill['tax_amount'], 2); ?></span>
+                                    </div>
+                                    <div class="breakdown-item">
+                                        <span>Service Charge:</span>
+                                        <span>₹<?php echo number_format($selected_bill['service_charge'], 2); ?></span>
+                                    </div>
+                                    <div class="breakdown-item total-payable">
+                                        <span>Total Payable:</span>
+                                        <span style="color: #e74c3c; font-weight: bold;">₹<?php echo number_format($selected_bill['final_amount'], 2); ?></span>
+                                    </div>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
                                     <span>Due Date:</span>
@@ -363,10 +473,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                         <?php endif; ?>
                                     </span>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; margin: 1rem 0; font-size: 1.2rem;">
-                                    <strong>Total Payable:</strong>
-                                    <strong>₹<?php echo number_format($selected_bill['amount'], 2); ?></strong>
+                                <?php if (isset($selected_bill['formatted_date'])): ?>
+                                <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
+                                    <span>Bill Generated:</span>
+                                    <span><?php echo $selected_bill['formatted_date']; ?></span>
                                 </div>
+                                <?php endif; ?>
                                 
                                 <?php if ($selected_bill['description']): ?>
                                     <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #ddd;">
@@ -410,7 +522,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                     <div>
                         <h4><i data-lucide="smartphone" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>eSewa Gateway</h4>
                         <ul>
-                            <li>Complete eSewa demo environment</li>
+                            <li>Direct eSewa payment interface</li>
+                            <li>No QR code section shown initially</li>
                             <li>Pay with demo credentials</li>
                             <li>Secure payment processing</li>
                             <li>Instant confirmation</li>
@@ -419,19 +532,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                     <div>
                         <h4><i data-lucide="qrcode" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>eSewa QR Code</h4>
                         <ul>
-                            <li>Scan QR code with eSewa app</li>
+                            <li>First shows large QR code for scanning</li>
+                            <li>Includes "Pay with QR code" button</li>
                             <li>Alternative admin scanner option</li>
-                            <li>No redirection required</li>
+                            <li>Option to switch to gateway payment</li>
                             <li>Instant payment confirmation</li>
                         </ul>
                     </div>
                     <div>
-                        <h4><i data-lucide="shield-check" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>Security Features</h4>
+                        <h4><i data-lucide="shield-check" style="width: 1.2rem; height: 1.2rem; margin-right: 0.5rem;"></i>Common Features</h4>
                         <ul>
                             <li>Bill validation before payment</li>
                             <li>Transaction ID tracking</li>
                             <li>Admin notification system</li>
                             <li>Payment history recording</li>
+                            <li>Demo credentials for testing</li>
                         </ul>
                     </div>
                 </div>
@@ -463,7 +578,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
     </footer>
 
     <script>
-        let currentBillAmount = <?php echo isset($selected_bill) ? $selected_bill['amount'] : '0'; ?>;
+        let currentBillAmount = <?php echo isset($selected_bill) ? $selected_bill['final_amount'] : '0'; ?>;
+        let currentPaymentMethod = 'esewa';
         
         function selectBill(billId, billAmount) {
             // Remove selected class from all bills
@@ -498,12 +614,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
             // Update the radio button
             document.querySelector(`.payment-method input[value="${method}"]`).checked = true;
             
+            // Update current payment method
+            currentPaymentMethod = method;
+            
             // Update button text based on selection
-            const payButton = document.querySelector('button[type="submit"]');
+            const payButton = document.getElementById('payButton');
             if (method === 'esewa_qr') {
                 payButton.innerHTML = '<i data-lucide="qrcode" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>Proceed to QR Payment';
             } else {
-                payButton.innerHTML = '<i data-lucide="arrow-right" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>Proceed to eSewa Payment';
+                payButton.innerHTML = '<i data-lucide="arrow-right" style="width: 1.2rem; height: 1.2rem; margin-right: 8px;"></i>Proceed to eSewa Gateway';
             }
         }
         
@@ -525,6 +644,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                         const dueDate = new Date(bill.due_date);
                         const today = new Date();
                         const isOverdue = dueDate < today;
+                        const formattedDate = bill.created_at ? new Date(bill.created_at).toLocaleDateString('en-US', { 
+                            year: 'numeric', month: 'short', day: 'numeric',
+                            hour: '2-digit', minute: '2-digit', hour12: true 
+                        }) : 'N/A';
                         
                         document.getElementById('paymentSummary').innerHTML = `
                             <div style="padding: 1.5rem; background: #f8f9fa; border-radius: 8px;">
@@ -533,9 +656,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                     <span>Bill Number:</span>
                                     <strong>${bill.bill_number}</strong>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
-                                    <span>Bill Amount:</span>
-                                    <strong>₹${parseFloat(bill.amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</strong>
+                                <div class="bill-breakdown">
+                                    <div class="breakdown-item">
+                                        <span>Base Amount:</span>
+                                        <span>₹${parseFloat(bill.amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                                    </div>
+                                    <div class="breakdown-item">
+                                        <span>Tax (${bill.tax_rate || 13}%):</span>
+                                        <span>₹${parseFloat(bill.tax_amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                                    </div>
+                                    <div class="breakdown-item">
+                                        <span>Service Charge:</span>
+                                        <span>₹${parseFloat(bill.service_charge).toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                                    </div>
+                                    <div class="breakdown-item total-payable">
+                                        <span>Total Payable:</span>
+                                        <span style="color: #e74c3c; font-weight: bold;">₹${parseFloat(bill.final_amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</span>
+                                    </div>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
                                     <span>Due Date:</span>
@@ -544,9 +681,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
                                         ${isOverdue ? '(Overdue)' : ''}
                                     </span>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; margin: 1rem 0; font-size: 1.2rem; padding-top: 1rem; border-top: 2px solid #3498db;">
-                                    <strong>Total Payable:</strong>
-                                    <strong style="color: #e74c3c;">₹${parseFloat(bill.amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}</strong>
+                                <div style="display: flex; justify-content: space-between; margin: 1rem 0;">
+                                    <span>Bill Generated:</span>
+                                    <span>${formattedDate}</span>
                                 </div>
                             </div>
                             
@@ -598,7 +735,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
             const firstBill = document.querySelector('.bill-item');
             if (firstBill) {
                 const billId = firstBill.querySelector('input').value;
-                const billAmount = <?php echo isset($pending_bills[0]) ? $pending_bills[0]['amount'] : '0'; ?>;
+                const billAmount = <?php echo isset($pending_bills[0]) ? $pending_bills[0]['final_amount'] : '0'; ?>;
                 updatePaymentSummary(billId, billAmount);
             }
             
@@ -647,5 +784,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['initiate_payment'])) {
         });
     </script>
     <script src="../js/script.js"></script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

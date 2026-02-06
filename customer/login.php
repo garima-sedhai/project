@@ -1,4 +1,7 @@
 <?php
+header("Cache-Control: no-cache, no-store, must-revalidate");
+header("Pragma: no-cache");
+header("Expires: 0");
 // REMOVE THIS LINE: session_start(); // config.php already starts it
 require_once '../includes/config.php';
 require_once '../includes/db_connection.php';
@@ -30,6 +33,11 @@ if (isset($_GET['success'])) {
     }
 }
 
+// Check for account deactivated message
+if (isset($_GET['account_deactivated'])) {
+    $error = "Account isn't available. Please register first.";
+}
+
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $email = trim($_POST['email']);
     $password = trim($_POST['password']);
@@ -48,6 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 // Check if user is admin trying to login to customer portal
                 if (!empty($user['is_admin']) && $user['is_admin']) {
                     $error = "Administrators should login through admin login page.";
+                }
+                // Check if account has been deactivated (has deletion timestamp)
+                elseif (!empty($user['deleted_at'])) {
+                    $error = "Account isn't available. Please register first.";
                 }
                 // Check if email is verified
                 elseif (empty($user['email_verified']) || !$user['email_verified']) {
@@ -321,10 +333,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 </button>
             </form>
             
-            <div class="login-links">
-                <a href="forgot_password.php">Forgot Password?</a>
-                <a href="register.php">Create Account</a>
-            </div>
+          <div class="login-links">
+            <a href="forgot_password.php">Forgot Password?</a>
+            <a href="register.php">Create Account</a>
+            <a href="../index.php">Back to Home</a> <!-- Add this line -->
+           </div>
             
             <div class="admin-login-link">
                 <a href="../admin/login.php">Admin Login</a>
@@ -363,5 +376,70 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
         });
     </script>
+<script>
+    // Back button handling for project defense - Allows going back to index.php
+    (function() {
+        // Check if we came from logout
+        const fromLogout = sessionStorage.getItem('logout_redirect') === 'allow_back';
+        
+        if (fromLogout) {
+            // Clear the flag
+            sessionStorage.removeItem('logout_redirect');
+            
+            // Set up history state to allow back navigation to index.php
+            history.replaceState({page: 'login_after_logout'}, '', window.location.href);
+            
+            // When back button is pressed, go to index.php
+            window.addEventListener('popstate', function(event) {
+                if (event.state && event.state.page === 'login_after_logout') {
+                    // Go to main index.php
+                    window.location.href = '../index.php';
+                }
+            });
+            
+            // Add a small delay and push another state to ensure back button works
+            setTimeout(function() {
+                history.pushState({page: 'login_after_logout'}, '');
+            }, 100);
+        } else {
+            // Normal login - prevent back to dashboard but allow to index.php
+            history.replaceState({page: 'normal_login'}, '', window.location.href);
+            
+            window.addEventListener('popstate', function(event) {
+                if (event.state && event.state.page === 'normal_login') {
+                    // Go to main index.php
+                    window.location.href = '../index.php';
+                }
+            });
+            
+            // Push state for back button
+            setTimeout(function() {
+                history.pushState({page: 'normal_login'}, '');
+            }, 100);
+        }
+        
+        // Add "Back to Home" button functionality
+        const backToHomeBtn = document.createElement('div');
+        backToHomeBtn.innerHTML = `
+            <div style="text-align: center; margin-top: 15px;">
+                <a href="../index.php" style="color: #075B5E; text-decoration: none; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 5px;">
+                    <i data-lucide="arrow-left" style="width: 1rem; height: 1rem;"></i>
+                    Back to Home
+                </a>
+            </div>
+        `;
+        
+        // Insert after admin login link
+        const adminLink = document.querySelector('.admin-login-link');
+        if (adminLink) {
+            adminLink.parentNode.insertBefore(backToHomeBtn, adminLink.nextSibling);
+        }
+        
+        // Initialize icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    })();
+</script>
 </body>
 </html>

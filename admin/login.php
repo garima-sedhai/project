@@ -1,4 +1,13 @@
 <?php
+// EXTREME CACHE CONTROL HEADERS AT THE VERY TOP
+header("Cache-Control: no-cache, no-store, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+header("Expires: 0");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("X-XSS-Protection: 1; mode=block");
+
 // For admin files:
 $base_path = dirname(__DIR__); // Goes up ONE level from admin folder to project folder
 require_once $base_path . '/includes/config.php';
@@ -43,7 +52,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,6 +59,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Login - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
+    <!-- EXTREME CACHE CONTROL META TAGS -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <!-- Lucide Icons CDN -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
@@ -119,6 +131,30 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             margin-bottom: 0.5rem;
             font-weight: 500;
         }
+        
+        /* Back to Home link */
+        .back-to-home {
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        
+        .back-to-home a {
+            color: #075B5E;
+            text-decoration: none;
+            font-size: 0.85rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            transition: color 0.3s;
+        }
+        
+        .back-to-home a:hover {
+            color: #0A6F73;
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -181,6 +217,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 </button>
             </form>
             
+            <div class="back-to-home">
+                <a href="../index.php">
+                    <i data-lucide="home" style="width: 1rem; height: 1rem;"></i>
+                    Back to Home
+                </a>
+            </div>
+            
             <div style="text-align: center; margin-top: 1rem; color: #666; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
                 <small>Admin access is restricted. Contact system administrator for credentials.</small>
             </div>
@@ -211,6 +254,43 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             // Re-render the icon
             lucide.createIcons();
         }
+        
+        // NUCLEAR BACK BUTTON PREVENTION
+        (function() {
+            // Clear ALL browser history and start fresh
+            history.replaceState(null, null, window.location.href);
+            
+            // Push multiple states to clear any existing history
+            for (let i = 0; i < 5; i++) {
+                history.pushState(null, null, window.location.href);
+            }
+            
+            // Completely disable back button
+            window.history.forward();
+            
+            // When ANY back navigation is attempted
+            window.onpopstate = function(event) {
+                // IMMEDIATELY redirect to index.php
+                window.location.replace('../index.php');
+                return false;
+            };
+            
+            // Prevent any caching
+            window.onpageshow = function(event) {
+                if (event.persisted) {
+                    window.location.reload();
+                }
+            };
+            
+            // Clear all storage
+            if (typeof(Storage) !== "undefined") {
+                sessionStorage.clear();
+                localStorage.clear();
+            }
+            
+            // Auto-focus on email field
+            document.getElementById('email').focus();
+        })();
     </script>
 </body>
 </html>

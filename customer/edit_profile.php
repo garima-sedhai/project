@@ -684,5 +684,6 @@ $first_letter = strtoupper(substr($initials, 0, 2));
         addressField.parentNode.appendChild(charCounter);
         updateCharCount(); // Initialize count
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

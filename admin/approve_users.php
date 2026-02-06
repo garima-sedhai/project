@@ -32,74 +32,122 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $user = $stmt->fetch();
                 
                 if ($user) {
-                    // Try sending approval email using PHPMailer helper function
+                    // IMPORTANT: Send real email to customer using PHPMailer
                     $email_sent = false;
                     $email_method = '';
                     
-                    // Method 1: Try main email helper (PHPMailer)
-                    if (function_exists('send_approval_email')) {
-                        if (send_approval_email($user['email'], $user['full_name'])) {
-                            $email_sent = true;
-                            $email_method = 'PHPMailer';
-                        }
-                    }
-                    
-                    // Method 2: Try fallback if main method fails
-                    if (!$email_sent) {
-                        require_once $base_path . '/includes/email_fallback.php';
-                        $fallback_subject = "Account Approved - BillPay Pro";
-                        $fallback_message = "Dear {$user['full_name']},\n\nYour account has been approved. You can now login at: " . SITE_URL . "customer/login.php\n\nBest regards,\nBillPay Pro Team";
+                    // Method 1: Try to send using your existing PHPMailer configuration
+                    try {
+                        // Create HTML email content
+                        $email_subject = "Account Approved - BillPay Pro";
+                        $email_message = "
+                            <!DOCTYPE html>
+                            <html>
+                            <head>
+                                <meta charset='UTF-8'>
+                                <style>
+                                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f5f7fa; margin: 0; padding: 20px; }
+                                    .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+                                    .header { background: #075B5E; color: white; padding: 30px 20px; text-align: center; }
+                                    .header h1 { margin: 0; font-size: 24px; }
+                                    .content { padding: 40px; }
+                                    .welcome { font-size: 18px; margin-bottom: 20px; color: #075B5E; font-weight: bold; }
+                                    .message { margin-bottom: 30px; color: #555; line-height: 1.8; }
+                                    .button { display: inline-block; background: #075B5E; color: white; text-decoration: none; padding: 12px 30px; border-radius: 5px; font-weight: bold; margin: 10px 0; }
+                                    .footer { background: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; border-top: 1px solid #e9ecef; }
+                                    .highlight { background: #f0f7f7; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #075B5E; }
+                                </style>
+                            </head>
+                            <body>
+                                <div class='container'>
+                                    <div class='header'>
+                                        <h1>Account Approved</h1>
+                                    </div>
+                                    <div class='content'>
+                                        <div class='welcome'>Dear {$user['full_name']},</div>
+                                        
+                                        <div class='message'>
+                                            <p>Great news! Your BillPay Pro account has been approved by our administration team.</p>
+                                            <p>You can now login to your account and start using all features of our billing system.</p>
+                                        </div>
+                                        
+                                        <div class='highlight'>
+                                            <p><strong>Your login details:</strong></p>
+                                            <p>Email: {$user['email']}</p>
+                                            <p>You can use the password you created during registration.</p>
+                                        </div>
+                                        
+                                        <div style='text-align: center; margin: 30px 0;'>
+                                            <a href='" . SITE_URL . "customer/login.php' class='button'>Login to Your Account</a>
+                                        </div>
+                                        
+                                        <div class='message'>
+                                            <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+                                        </div>
+                                    </div>
+                                    <div class='footer'>
+                                        <p>This is an automated message. Please do not reply to this email.</p>
+                                        <p>&copy; " . date('Y') . " BillPay Pro. All rights reserved.</p>
+                                    </div>
+                                </div>
+                            </body>
+                            </html>
+                        ";
                         
-                        if (function_exists('send_email_fallback') && send_email_fallback($user['email'], $fallback_subject, $fallback_message, false)) {
-                            $email_sent = true;
-                            $email_method = 'Fallback (mail())';
+                        // Try using your email helper function first
+                        if (function_exists('send_email')) {
+                            if (send_email($user['email'], $email_subject, $email_message)) {
+                                $email_sent = true;
+                                $email_method = 'Email sent successfully';
+                            }
                         }
-                    }
-                    
-                    // Method 3: Try direct mail() function as last resort
-                    if (!$email_sent) {
-                        $simple_subject = "Account Approved - BillPay Pro";
-                        $simple_message = "Dear {$user['full_name']},\r\n\r\nYour account has been approved.\r\nYou can now login at: " . SITE_URL . "customer/login.php\r\n\r\nBest regards,\r\nBillPay Pro Team";
-                        $simple_headers = "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">\r\n";
                         
-                        if (mail($user['email'], $simple_subject, $simple_message, $simple_headers)) {
-                            $email_sent = true;
-                            $email_method = 'Direct mail()';
+                        // If send_email function doesn't exist, try send_approval_email
+                        if (!$email_sent && function_exists('send_approval_email')) {
+                            if (send_approval_email($user['email'], $user['full_name'])) {
+                                $email_sent = true;
+                                $email_method = 'Email sent successfully';
+                            }
                         }
-                    }
-                    
-                    // Check if notifications table has link column
-                    $stmt_check = $pdo->query("SHOW COLUMNS FROM notifications LIKE 'link'");
-                    $has_link_column = $stmt_check->rowCount() > 0;
-                    
-                    // Create notification for user regardless of email status
-                    if ($has_link_column) {
-                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message, link) VALUES (?, 'approval', 'Registration Approved', 'Your registration has been approved by admin. You can now login.', 'customer/dashboard.php')");
-                        $stmt->execute([$user_id]);
-                    } else {
-                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'approval', 'Registration Approved', 'Your registration has been approved by admin. You can now login.')");
-                        $stmt->execute([$user_id]);
-                    }
-                    
-                    // Also send notification to all admins
-                    $admin_stmt = $pdo->query("SELECT id FROM users WHERE is_admin = TRUE");
-                    $admins = $admin_stmt->fetchAll();
-                    
-                    foreach ($admins as $admin) {
-                        if ($has_link_column) {
-                            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message, link) VALUES (?, 'system', 'User Approved', ?, 'admin/approve_users.php')");
-                            $stmt->execute([$admin['id'], "User {$user['full_name']} ({$user['email']}) has been approved."]);
-                        } else {
-                            $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'system', 'User Approved', ?)");
-                            $stmt->execute([$admin['id'], "User {$user['full_name']} ({$user['email']}) has been approved."]);
+                        
+                        // Last resort: use PHP's mail() function
+                        if (!$email_sent) {
+                            $plain_text = "Dear {$user['full_name']},\n\n";
+                            $plain_text .= "Your BillPay Pro account has been approved.\n";
+                            $plain_text .= "You can now login to your account using:\n";
+                            $plain_text .= "Email: {$user['email']}\n";
+                            $plain_text .= "Password: [Your registered password]\n\n";
+                            $plain_text .= "Login URL: " . SITE_URL . "customer/login.php\n\n";
+                            $plain_text .= "Best regards,\nBillPay Pro Team";
+                            
+                            $headers = "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">\r\n";
+                            $headers .= "Reply-To: " . ADMIN_EMAIL . "\r\n";
+                            $headers .= "MIME-Version: 1.0\r\n";
+                            $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+                            
+                            if (mail($user['email'], $email_subject, $plain_text, $headers)) {
+                                $email_sent = true;
+                                $email_method = 'Email sent via basic mail()';
+                            }
                         }
+                        
+                    } catch (Exception $e) {
+                        error_log("Email sending error: " . $e->getMessage());
                     }
+                    
+                    // REMOVED: All notification creation for admin
+                    // We only send email to customer, no system notifications
                     
                     if ($email_sent) {
-                        $message = "User approved successfully! Approval email sent via {$email_method} to " . $user['email'];
+                        $message = "<strong>User approved successfully!</strong><br>";
+                        $message .= "✓ Approval email sent to: " . $user['email'] . "<br>";
+                        $message .= "✓ User can now login with their credentials";
                         $message_type = "success";
                     } else {
-                        $message = "User approved successfully! (Email could not be sent. User has been notified in-system)";
+                        $message = "<strong>User approved successfully!</strong><br>";
+                        $message .= "⚠ Email notification failed to send<br>";
+                        $message .= "✓ User can now login with their credentials<br>";
+                        $message .= "<small>Please inform the user manually at: " . $user['email'] . "</small>";
                         $message_type = "warning";
                     }
                 }
@@ -114,21 +162,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $stmt = $pdo->prepare("UPDATE users SET admin_approved = FALSE, registration_status = 'rejected', is_active = FALSE, updated_at = NOW() WHERE id = ?");
                 $stmt->execute([$user_id]);
                 
-                // Create notification for user
+                // Try to send rejection email using multiple methods
                 if ($user) {
-                    // Check if notifications table has link column
-                    $stmt_check = $pdo->query("SHOW COLUMNS FROM notifications LIKE 'link'");
-                    $has_link_column = $stmt_check->rowCount() > 0;
-                    
-                    if ($has_link_column) {
-                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message, link) VALUES (?, 'system', 'Registration Rejected', 'Your registration has been rejected by admin. Please contact support for more information.', 'customer/support.php')");
-                        $stmt->execute([$user_id]);
-                    } else {
-                        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'system', 'Registration Rejected', 'Your registration has been rejected by admin. Please contact support for more information.')");
-                        $stmt->execute([$user_id]);
-                    }
-                    
-                    // Try to send rejection email using multiple methods
                     $reject_email_sent = false;
                     
                     // Try main email helper first
@@ -182,7 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     }
                 }
                 
-                $message = "User registration rejected. Notification sent.";
+                $message = "User registration rejected. Email notification sent to user.";
                 $message_type = "success";
             }
             
@@ -522,13 +557,6 @@ try {
             font-size: 1.3rem;
         }
         
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            color: white;
-        }
-        
         .user-details {
             margin: 15px 0;
         }
@@ -743,7 +771,7 @@ try {
                     ?>
                 </div>
                 <span><?php echo $_SESSION['full_name']; ?></span>
-                <a href="../includes/logout.php" class="logout-btn">Logout</a>
+                <a href="logout.php" class="logout-btn">Logout</a>
             </div>
         </div>
     </header>
@@ -763,7 +791,7 @@ try {
                     <?php else: ?>
                         <i data-lucide="alert-circle" style="width: 24px; height: 24px;"></i>
                     <?php endif; ?>
-                    <span><?php echo htmlspecialchars($message); ?></span>
+                    <span><?php echo $message; ?></span>
                 </div>
             <?php endif; ?>
             

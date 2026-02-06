@@ -72,13 +72,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = "Please enter a valid email address.";
     }
     
-    // Check if email already exists
+    // Check if email already exists AND account is active
     if (empty($errors) && !empty($form_data['email'])) {
         try {
-            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? AND is_deleted = 0");
+            $stmt = $pdo->prepare("SELECT id, email_verified, admin_approved, deleted_at FROM users WHERE email = ?");
             $stmt->execute([$form_data['email']]);
-            if ($stmt->fetch()) {
-                $errors[] = "This email is already registered. Please use a different email or try to login.";
+            $existing_user = $stmt->fetch();
+            
+            if ($existing_user) {
+                // Check if account is deactivated (has deletion timestamp)
+                if (empty($existing_user['deleted_at'])) {
+                    // Account exists and is NOT deactivated - check if active
+                    if ($existing_user['email_verified'] && $existing_user['admin_approved']) {
+                        $errors[] = "This email is already registered with an active account. Please use a different email or try to login.";
+                    } else {
+                        $errors[] = "This email is already registered but not fully activated. Please check your email for verification or wait for admin approval.";
+                    }
+                }
+                // If account has deleted_at timestamp, allow re-registration (continue)
             }
         } catch (PDOException $e) {
             $errors[] = "Database error: " . $e->getMessage();
@@ -107,44 +118,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Start transaction
             $pdo->beginTransaction();
             
-            // Generate username from email
-            $username = generate_username($form_data['email']);
+            // Check if email exists as deactivated account
+            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? AND deleted_at IS NOT NULL");
+            $stmt->execute([$form_data['email']]);
+            $deactivated_user = $stmt->fetch();
             
-            // Hash password
-            $hashed_password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+            if ($deactivated_user) {
+                // UPDATE existing deactivated user instead of inserting new
+                $user_id = $deactivated_user['id'];
+                
+                // Generate username from email
+                $username = generate_username($form_data['email']);
+                
+                // Hash password
+                $hashed_password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+                
+                // Generate OTP
+                $otp = rand(100000, 999999);
+                $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+                
+                // Update the deactivated user with new information
+                $update_stmt = $pdo->prepare("
+                    UPDATE users SET 
+                        username = ?,
+                        full_name = ?,
+                        password = ?,
+                        phone = ?,
+                        address = ?,
+                        user_type = 'customer',
+                        account_status = 'pending',
+                        email_verified = 0,
+                        approved_by_admin = 0,
+                        admin_approved = 0,
+                        registration_status = 'pending',
+                        is_admin = 0,
+                        is_active = 1,
+                        deleted_at = NULL,
+                        deletion_reason = NULL,
+                        updated_at = NOW(),
+                        created_at = NOW()
+                    WHERE id = ?
+                ");
+                
+                $update_stmt->execute([
+                    $username,
+                    $form_data['full_name'],
+                    $hashed_password,
+                    $form_data['phone'],
+                    $form_data['address'],
+                    $user_id
+                ]);
+                
+                // Also delete any old OTP records for this email
+                $delete_otp_stmt = $pdo->prepare("DELETE FROM verification_otps WHERE email = ?");
+                $delete_otp_stmt->execute([$form_data['email']]);
+                
+            } else {
+                // INSERT new user (normal registration)
+                $username = generate_username($form_data['email']);
+                
+                // Hash password
+                $hashed_password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+                
+                // Generate OTP
+                $otp = rand(100000, 999999);
+                $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+                
+                // Insert user data
+                $insert_stmt = $pdo->prepare("
+                    INSERT INTO users (
+                        username, full_name, email, password, phone, address, 
+                        user_type, account_status, email_verified, 
+                        approved_by_admin, admin_approved, registration_status,
+                        is_admin, is_active, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'customer', 
+                             'pending', 0, 0, 0, 'pending', 0, 1, NOW())
+                ");
+                
+                $insert_stmt->execute([
+                    $username,
+                    $form_data['full_name'],
+                    $form_data['email'],
+                    $hashed_password,
+                    $form_data['phone'],
+                    $form_data['address']
+                ]);
+                
+                $user_id = $pdo->lastInsertId();
+            }
             
-            // Generate OTP
-            $otp = rand(100000, 999999);
-            $otp_expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
-            
-            // Insert user data with ONLY columns that exist in your table
-            $stmt = $pdo->prepare("
-                INSERT INTO users (
-                    username, full_name, email, password, phone, address, 
-                    user_type, account_status, email_verified, 
-                    approved_by_admin, admin_approved, registration_status,
-                    is_admin, is_active, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'customer', 
-                         'pending', 0, 0, 0, 'pending', 0, 1, NOW())
-            ");
-            
-            $stmt->execute([
-                $username,
-                $form_data['full_name'],
-                $form_data['email'],
-                $hashed_password,
-                $form_data['phone'],
-                $form_data['address']
-            ]);
-            
-            $user_id = $pdo->lastInsertId();
-            
-            // Also store in verification_otps table for backup
-            $stmt = $pdo->prepare("
+            // Store OTP in verification_otps table
+            $otp_stmt = $pdo->prepare("
                 INSERT INTO verification_otps (email, otp, type, expires_at) 
                 VALUES (?, ?, 'registration', ?)
+                ON DUPLICATE KEY UPDATE 
+                    otp = VALUES(otp),
+                    expires_at = VALUES(expires_at),
+                    created_at = NOW()
             ");
-            $stmt->execute([$form_data['email'], $otp, $otp_expiry]);
+            $otp_stmt->execute([$form_data['email'], $otp, $otp_expiry]);
             
             // Send OTP email using your existing function
             $email_sent = sendOTPEmail($form_data['email'], $form_data['full_name'], $otp);

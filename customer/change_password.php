@@ -2,7 +2,7 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-session_start();
+//session_start();
 require_once $base_path . '/includes/db_connection.php';
 // ... rest of code
 
@@ -549,5 +549,6 @@ $first_letter = strtoupper(substr($initials, 0, 2));
             return true;
         });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

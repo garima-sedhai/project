@@ -694,5 +694,6 @@ foreach ($notifications as &$notification) {
             });
         });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

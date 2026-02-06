@@ -10,15 +10,23 @@ if (!isset($_SESSION['user_id']) || (isset($_SESSION['is_admin']) && $_SESSION['
 
 $user_id = $_SESSION['user_id'];
 
-// Get pending bills
-$stmt = $pdo->prepare("SELECT * FROM bills 
+// Get pending bills - UPDATED: Get all bill details including tax and service charges
+$stmt = $pdo->prepare("SELECT *, 
+                      COALESCE(final_amount, amount, total_amount) as payable_amount,
+                      amount as base_amount
+                      FROM bills 
                       WHERE user_id = ? AND payment_status = 'pending'
                       ORDER BY due_date ASC");
 $stmt->execute([$user_id]);
 $pending_bills = $stmt->fetchAll();
 
-// Get paid bills for history
-$stmt = $pdo->prepare("SELECT b.*, p.payment_date, p.transaction_id 
+// Get paid bills for history - UPDATED: Get final_amount for paid bills
+$stmt = $pdo->prepare("SELECT b.*, 
+                      COALESCE(b.final_amount, b.amount, b.total_amount) as payable_amount,
+                      b.amount as base_amount,
+                      p.payment_date, 
+                      p.transaction_id,
+                      p.amount as paid_amount
                       FROM bills b 
                       JOIN payments p ON b.id = p.bill_id 
                       WHERE b.user_id = ? AND b.payment_status = 'paid'
@@ -35,6 +43,29 @@ $paid_bills = $stmt->fetchAll();
     <title>My Bills - BillPay Pro</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+        .bill-breakdown {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 0.25rem;
+        }
+        
+        .breakdown-item {
+            display: inline-block;
+            margin-right: 1rem;
+        }
+        
+        .final-amount {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-top: 0.25rem;
+        }
+        
+        .amount-column {
+            min-width: 150px;
+        }
+    </style>
 </head>
 <body>
     <?php include '../includes/header.php'; ?>
@@ -51,7 +82,7 @@ $paid_bills = $stmt->fetchAll();
                         <tr>
                             <th>Bill No.</th>
                             <th>Service</th>
-                            <th>Amount</th>
+                            <th class="amount-column">Amount</th>
                             <th>Due Date</th>
                             <th>Status</th>
                             <th>Action</th>
@@ -62,11 +93,38 @@ $paid_bills = $stmt->fetchAll();
                             $due_date = strtotime($bill['due_date']);
                             $today = time();
                             $is_overdue = $due_date < $today;
+                            
+                            // Calculate total if final_amount is not set
+                            $final_amount = $bill['final_amount'] ?? $bill['amount'] ?? 0;
+                            $base_amount = $bill['amount'] ?? 0;
+                            $tax_amount = $bill['tax_amount'] ?? 0;
+                            $service_charge = $bill['late_fee'] ?? 0;
                         ?>
                         <tr>
                             <td><?php echo $bill['bill_number']; ?></td>
                             <td><?php echo ucfirst($bill['bill_type']); ?></td>
-                            <td>₹<?php echo number_format($bill['amount'] ?? $bill['final_amount'], 2); ?></td>
+                            <td class="amount-column">
+                                <div class="final-amount">
+                                    ₹<?php echo number_format($final_amount, 2); ?>
+                                </div>
+                                <?php if ($tax_amount > 0 || $service_charge > 0): ?>
+                                <div class="bill-breakdown">
+                                    <span class="breakdown-item">
+                                        Base: ₹<?php echo number_format($base_amount, 2); ?>
+                                    </span>
+                                    <?php if ($tax_amount > 0): ?>
+                                    <span class="breakdown-item">
+                                        Tax: ₹<?php echo number_format($tax_amount, 2); ?>
+                                    </span>
+                                    <?php endif; ?>
+                                    <?php if ($service_charge > 0): ?>
+                                    <span class="breakdown-item">
+                                        Service: ₹<?php echo number_format($service_charge, 2); ?>
+                                    </span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php echo date('M d, Y', $due_date); ?>
                                 <?php if ($is_overdue): ?>
@@ -101,19 +159,45 @@ $paid_bills = $stmt->fetchAll();
                         <tr>
                             <th>Bill No.</th>
                             <th>Service</th>
-                            <th>Amount</th>
+                            <th class="amount-column">Amount</th>
                             <th>Paid Date</th>
                             <th>Transaction ID</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($paid_bills as $bill): ?>
+                        <?php foreach ($paid_bills as $bill): 
+                            $final_amount = $bill['final_amount'] ?? $bill['paid_amount'] ?? $bill['amount'] ?? 0;
+                            $base_amount = $bill['amount'] ?? 0;
+                            $tax_amount = $bill['tax_amount'] ?? 0;
+                            $service_charge = $bill['late_fee'] ?? 0;
+                        ?>
                         <tr>
                             <td><?php echo $bill['bill_number']; ?></td>
                             <td><?php echo ucfirst($bill['bill_type']); ?></td>
-                            <td>₹<?php echo number_format($bill['amount'] ?? $bill['final_amount'], 2); ?></td>
-                            <td><?php echo date('M d, Y', strtotime($bill['payment_date'])); ?></td>
+                            <td class="amount-column">
+                                <div class="final-amount">
+                                    ₹<?php echo number_format($final_amount, 2); ?>
+                                </div>
+                                <?php if ($tax_amount > 0 || $service_charge > 0): ?>
+                                <div class="bill-breakdown">
+                                    <span class="breakdown-item">
+                                        Base: ₹<?php echo number_format($base_amount, 2); ?>
+                                    </span>
+                                    <?php if ($tax_amount > 0): ?>
+                                    <span class="breakdown-item">
+                                        Tax: ₹<?php echo number_format($tax_amount, 2); ?>
+                                    </span>
+                                    <?php endif; ?>
+                                    <?php if ($service_charge > 0): ?>
+                                    <span class="breakdown-item">
+                                        Service: ₹<?php echo number_format($service_charge, 2); ?>
+                                    </span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo date('M d, Y h:i A', strtotime($bill['payment_date'])); ?></td>
                             <td><code><?php echo $bill['transaction_id']; ?></code></td>
                             <td><span class="badge badge-success">Paid</span></td>
                         </tr>
@@ -133,5 +217,6 @@ $paid_bills = $stmt->fetchAll();
     <script>
         lucide.createIcons();
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

@@ -2,7 +2,6 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-// REMOVE THIS LINE: session_start(); // config.php already starts session
 require_once $base_path . '/includes/db_connection.php';
 
 // Check if user is logged in
@@ -10,18 +9,34 @@ if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit();
 }
-// ... rest of your pending_approval.php code
 
-// Only show this page if user is not approved yet
-if ($_SESSION['admin_approved'] || $_SESSION['is_admin']) {
+$user_id = $_SESSION['user_id'];
+
+// Get user details
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+$stmt->execute([$user_id]);
+$user = $stmt->fetch();
+
+// Check if account has been deactivated
+if (!empty($user['deleted_at'])) {
+    // Account is deactivated
+    session_destroy();
+    $_SESSION['logout_message'] = "Account isn't available. Please register first.";
+    header("Location: login.php");
+    exit();
+}
+
+// Check if user is already approved
+if ($user['admin_approved'] && $user['registration_status'] == 'approved') {
     header("Location: dashboard.php");
     exit();
 }
 
-// Get user details
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
-$stmt->execute([$_SESSION['user_id']]);
-$user = $stmt->fetch();
+// Only show this page if user is not approved yet
+if (isset($_SESSION['admin_approved']) && $_SESSION['admin_approved']) {
+    header("Location: dashboard.php");
+    exit();
+}
 ?>
 
 <!DOCTYPE html>
@@ -214,5 +229,6 @@ $user = $stmt->fetch();
     <script>
         lucide.createIcons();
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>

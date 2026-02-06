@@ -2,7 +2,6 @@
 // For customer files:
 $base_path = dirname(__DIR__);
 require_once $base_path . '/includes/config.php';
-// REMOVE THIS LINE: session_start(); // config.php already starts session
 require_once $base_path . '/includes/db_connection.php';
 
 // Redirect if not logged in
@@ -30,6 +29,15 @@ if (!$user) {
     session_destroy();
     $_SESSION['logout_message'] = "User account not found. Please register again.";
     header("Location: ../auth/login.php");
+    exit();
+}
+
+// Check if account has been deactivated
+if (!empty($user['deleted_at'])) {
+    // Account has been deactivated
+    session_destroy();
+    $_SESSION['logout_message'] = "Account isn't available. Please register first.";
+    header("Location: login.php");
     exit();
 }
 
@@ -156,9 +164,9 @@ foreach ($names as $n) {
 }
 $first_letter = strtoupper(substr($initials, 0, 2)); // Get first two initials
 
-// Get notification count - UPDATED for your notifications table
+// Get notification count
 try {
-    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0");
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE");
     $stmt->execute([$user_id]);
     $notification_result = $stmt->fetch();
     $notification_count = $notification_result['count'] ?? 0;
@@ -450,32 +458,37 @@ try {
                         </a>
                     </li>
                     <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
-                            <div class="user-menu">
-                                <div class="user-avatar">
-                                    <?php echo $first_letter; ?>
-                                </div>
-                                <span><?php echo htmlspecialchars($user['full_name']); ?></span>
-                                <?php if ($notification_count > 0): ?>
-                                    <span class="badge bg-danger ms-1"><?php echo $notification_count; ?></span>
-                                <?php endif; ?>
-                            </div>
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><a class="dropdown-item" href="profile.php"><i class="fas fa-user me-2"></i> My Profile</a></li>
-                            <li><a class="dropdown-item" href="settings.php"><i class="fas fa-cog me-2"></i> Settings</a></li>
-                            <!-- UPDATED: Changed from notifications.php to notification.php -->
-                            <li><a class="dropdown-item" href="notification.php">
-                                <i class="fas fa-bell me-2"></i> Notifications
-                                <?php if ($notification_count > 0): ?>
-                                    <span class="badge bg-danger float-end"><?php echo $notification_count; ?></span>
-                                <?php endif; ?>
-                            </a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <!-- UPDATED LOGOUT LINK -->
-                            <li><a class="dropdown-item text-danger" href="logout.php"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
-                        </ul>
-                    </li>
+    <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+        <div class="user-menu">
+            <div class="user-avatar">
+                <?php echo $first_letter; ?>
+            </div>
+            <span><?php echo htmlspecialchars($user['full_name']); ?></span>
+            <?php if ($notification_count > 0): ?>
+                <span class="badge bg-danger ms-1"><?php echo $notification_count; ?></span>
+            <?php endif; ?>
+        </div>
+    </a>
+    <ul class="dropdown-menu dropdown-menu-end">
+        <li><a class="dropdown-item" href="profile.php"><i class="fas fa-user me-2"></i> My Profile</a></li>
+        <!-- ADDED: Change Password option -->
+        <li><a class="dropdown-item" href="change_password.php"><i class="fas fa-key me-2"></i> Change Password</a></li>
+        <!-- ADDED: Delete Account option -->
+        <li><a class="dropdown-item text-danger" href="delete_account.php"><i class="fas fa-user-times me-2"></i> Delete Account</a></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><a class="dropdown-item" href="settings.php"><i class="fas fa-cog me-2"></i> Settings</a></li>
+        <!-- UPDATED: Changed from notifications.php to notification.php -->
+        <li><a class="dropdown-item" href="notification.php">
+            <i class="fas fa-bell me-2"></i> Notifications
+            <?php if ($notification_count > 0): ?>
+                <span class="badge bg-danger float-end"><?php echo $notification_count; ?></span>
+            <?php endif; ?>
+        </a></li>
+        <li><hr class="dropdown-divider"></li>
+        <!-- UPDATED LOGOUT LINK -->
+        <li><a class="dropdown-item text-danger" href="logout.php"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
+    </ul>
+</li>
                 </ul>
             </div>
         </div>
@@ -512,7 +525,6 @@ try {
                                 <i class="fas fa-user"></i> Profile
                             </a>
                         </li>
-                        <!-- UPDATED: Changed from notifications.php to notification.php -->
                         <li class="nav-item">
                             <a class="nav-link" href="notification.php">
                                 <i class="fas fa-bell"></i> Notifications
@@ -741,5 +753,6 @@ try {
             });
         });
     </script>
+    <script src="js/logout.js"></script>
 </body>
 </html>
